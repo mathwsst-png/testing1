@@ -1969,7 +1969,7 @@ do (function()
                     Hook.Status = "Executor tidak punya fungsi request"
                 else
                     local body = HttpService:JSONEncode({
-                        username = "n4th",
+                        username = "RCM",
                         content = ("**[%s]** %s"):format(LocalPlayer.Name, text),
                     })
                     local ok, res = pcall(req, {
@@ -9565,7 +9565,7 @@ do (function()
     end
     local ok = pcall(function()
         WindUI:Popup({
-            Title = "n4th",
+            Title = "RCM",
             Icon = "languages",
             Content = "Pilih bahasa menu\nChoose menu language",
             Buttons = {
@@ -9584,15 +9584,33 @@ do (function()
 end)() end
 
 Session.InitStep = "membuat menu WindUI"
+Session.InitStep = "membuat menu WindUI"
+-- Tema RCM: hitam agak transparan + putih, minimalis
+local RCM_THEME = "Dark"
+pcall(function()
+    WindUI:AddTheme({
+        Name = "RCM",
+        Accent = Color3.fromHex("#FFFFFF"),
+        Dialog = Color3.fromHex("#0A0A0A"),
+        Outline = Color3.fromHex("#FFFFFF"),
+        Text = Color3.fromHex("#FFFFFF"),
+        Placeholder = Color3.fromHex("#8C8C8C"),
+        Background = Color3.fromHex("#000000"),
+        Button = Color3.fromHex("#161616"),
+        Icon = Color3.fromHex("#EDEDED"),
+    })
+    RCM_THEME = "RCM"
+end)
+pcall(function() WindUI.TransparencyValue = 0.28 end) -- makin besar = makin transparan
 local Window = I18N.wrap(WindUI:CreateWindow({
-    Title = "n4th",
-    Icon = "sprout",
-    Author = "v5.9.0 | Tester",
+    Title = "RCM",
+    Icon = "square",
+    Author = "v5.9.0",
     Folder = "n4thOpus",
-    Size = UDim2.fromOffset(640, 380),
-    Theme = "Dark",
+    Size = UDim2.fromOffset(600, 360),
+    Theme = RCM_THEME,
     Transparent = true,
-    SideBarWidth = 150,
+    SideBarWidth = 140,
     ToggleKey = Enum.KeyCode.Insert,  -- PC: tekan Insert untuk buka/tutup menu
 }))
 UI.Window = Window
@@ -9600,10 +9618,17 @@ UI.Window = Window
 -- Cadangan PC: kalau tombol susah dicari, tekan Insert.
 pcall(function()
     Window:EditOpenButton({
-        Title = "n4th",
-        Icon = "sprout",
+        Title = "RCM",
+        Icon = "square",
         Draggable = true,
         OnlyMobile = false,
+    })
+end)
+pcall(function()
+    Window:EditOpenButton({
+        Color = ColorSequence.new(Color3.fromRGB(0, 0, 0), Color3.fromRGB(45, 45, 45)),
+        CornerRadius = UDim.new(0, 10),
+        StrokeThickness = 1,
     })
 end)
 
@@ -9616,10 +9641,10 @@ end
 -- Sidebar dikelompokkan: grup utama bisa dibuka / ditutup (isinya tab-tab)
 local Groups = {}
 for _, g in ipairs({
-    { key = "farm", title = "Farming", icon = "sprout", opened = true },
-    { key = "fitur", title = "Fitur", icon = "sparkles" },
-    { key = "aman", title = "Keamanan", icon = "shield" },
-    { key = "setel", title = "Setelan", icon = "settings" },
+    { key = "farm", title = "Farming", icon = "circle", opened = true },
+    { key = "fitur", title = "Fitur", icon = "circle" },
+    { key = "aman", title = "Keamanan", icon = "circle" },
+    { key = "setel", title = "Setelan", icon = "circle" },
 }) do
     local ok, sec = pcall(function()
         return Window:Section({ Title = g.title, Icon = g.icon, Opened = g.opened == true })
