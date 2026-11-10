@@ -1,4 +1,3 @@
-
 local G = (getgenv and getgenv()) or _G
 for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi lama
     if G[key] and G[key].Cleanup then pcall(G[key].Cleanup) end
@@ -633,7 +632,6 @@ local State = {
     HitsOverride = 0,             -- jumlah pukulan manual (0 = otomatis)
     BreakBackground = true,       -- selalu ikut pecah background (tanpa tombol)
     MultiTarget = 1,              -- jumlah tile dipukul bergantian (1 = biasa)
-    PunchX4 = false,             -- toggle UI eksperimental; belum terhubung ke input/punch game
     SelectedId = nil,
     WorldBreakId = nil,           -- satu jenis block foreground dari world aktif
     WorldBreakCollect = false,    -- terpisah dari opsi collect Auto Farm / Clear World
@@ -641,6 +639,9 @@ local State = {
     CalibX = 0,
     CalibY = 0,
     AntiAfk = true,
+    FastPunch = false,            -- 4x hit cepat saat pukul MANUAL (bukan Auto Farm)
+    FastPunchHits = 4,
+    FastPunchMs = 110,
     MutePunch = true,
     Visual = true,                -- animasi tangan saat break / place / tanam / panen (tampilan saja)
     LiteMode = false,
@@ -1839,8 +1840,8 @@ end)() end
 Config.add("Farm", State, {
     "Mode", "PlaceMs", "BreakMs", "AfterBreakMs", "HitsOverride", "SelectedId", "Offsets",
     "CalibX", "CalibY", "AntiAfk", "MutePunch", "Visual", "LiteMode", "AutoCollect", "MultiTarget",
-    "CollectAround", "CollectRadius", "CollectMode",
-    "WorldBreakId", "WorldBreakCollect", "PunchX4",
+    "CollectAround", "CollectRadius", "CollectMode", "FastPunch", "FastPunchHits", "FastPunchMs",
+    "WorldBreakId", "WorldBreakCollect",
 })
 -- Pindahkan nilai default lama. Nilai yang dipilih di versi baru tetap berlaku.
 if (Config.Data.Version == nil or Config.Data.Version == 1) and State.AfterBreakMs == 300 then
@@ -2534,6 +2535,46 @@ local function sendSetTile(layer, x, y, id)
     return true
 end
 
+-- ===== FAST PUNCH (4x hit saat pukul manual di block apa pun) =====
+Session.FastPunch = Session.FastPunch or { Hooked = nil, Bursting = false }
+function Session.FastPunch.install()
+    local fn = Refs.Punch
+    if not fn then return false, "Fungsi pukul game belum ketemu" end
+    local cur = Session.FastPunch.Hooked
+    if cur and rawequal(cur.fn, fn) then return true end
+    if type(hookfunction) ~= "function" then return false, "Executor tidak punya hookfunction" end
+    local orig
+    local function wrapper(x, y, ...)
+        local extra = table.pack(...)
+        local isXY = type(x) == "number" and type(y) == "number"
+        local fg0 = isXY and tileAt("fg", x, y) or nil
+        local res = table.pack(orig(x, y, ...))
+        if isXY and alive() and State.FastPunch and not State.ScriptPunch
+            and not Session.FastPunch.Bursting and fg0 ~= nil then
+            Session.FastPunch.Bursting = true
+            task.spawn(function()
+                pcall(function()
+                    for _ = 2, math.clamp(State.FastPunchHits or 4, 2, 8) do
+                        task.wait(math.max(State.FastPunchMs or 110, 20) / 1000)
+                        if not (alive() and State.FastPunch) then break end
+                        local fg, bg = tileAt("fg", x, y), tileAt("bg", x, y)
+                        if (fg or 0) == 0 and (bg or 0) == 0 then break end
+                        if fg0 ~= 0 and fg ~= fg0 then break end
+                        pcall(orig, x, y, table.unpack(extra, 1, extra.n))
+                    end
+                end)
+                Session.FastPunch.Bursting = false
+            end)
+        end
+        return table.unpack(res, 1, res.n)
+    end
+    local ok, res = pcall(hookfunction, fn, wrapper)
+    if not ok then return false, tostring(res) end
+    orig = res
+    Session.FastPunch.Hooked = { fn = fn }
+    return true
+end
+
 local function sendHitFx(x, y)
     if NetOk and type(Net) == "table" and Net.act then
         pcall(Net.act.send, { x = x + 0.5, y = y + 0.5 })
@@ -2628,7 +2669,9 @@ local function tryBreak(x, y, includeBg, onlyId)
         end
     end
     if Refs.Punch then
+        State.ScriptPunch = true
         local ok, err = pcall(Refs.Punch, x, y, State.MutePunch or nil, nil)
+        State.ScriptPunch = false
         if not ok then
             State.LastAction = "Error pukul: " .. tostring(err)
             return nil
@@ -9593,6 +9636,38 @@ end)
 Box.FarmCtl = box(FarmTab, "Kontrol", true)
 Box.FarmBlock = box(FarmTab, "Block", true)
 Box.FarmSpeed = box(FarmTab, "Mode & Kecepatan", false)
+Box.FastPunch = box(FarmTab, "Fast Punch (pukul manual)", true)
+safe(function()
+    Box.FastPunch:Toggle({
+        Title = "Fast Punch / 4x Hit",
+        Desc = "Jika aktif, setiap kamu memukul block APA PUN secara manual, karakter memukul beberapa kali berturut-turut dengan jeda pendek. Tidak terkait Auto Farm.",
+        Value = State.FastPunch,
+        Callback = function(on)
+            State.FastPunch = on and true or false
+            if on then
+                local ok, err = Session.FastPunch.install()
+                if not ok then
+                    State.FastPunch = false
+                    notify("Fast Punch", tostring(err), 4)
+                end
+            end
+        end,
+    })
+end)
+addNumber(Box.FastPunch, {
+    Title = "Jumlah Hit",
+    Desc = "Total pukulan per satu hit manual (default 4)",
+    Min = 2, Max = 8, Step = 1, Default = State.FastPunchHits,
+    Callback = function(v) State.FastPunchHits = math.floor(v) end,
+})
+addNumber(Box.FastPunch, {
+    Title = "Jeda antar Hit (ms)",
+    Desc = "100-150 ideal. Terlalu kecil bisa ditolak server",
+    Min = 40, Max = 300, Step = 5, Default = State.FastPunchMs,
+    Callback = function(v) State.FastPunchMs = math.floor(v) end,
+})
+if State.FastPunch then safe(function() pcall(Session.FastPunch.install) end) end
+
 
 safe(function()
     UI.FarmToggle = Box.FarmCtl:Toggle({
@@ -9611,19 +9686,6 @@ safe(function()
         Desc = "Ambil drop di semua tile grid (caranya ikut Mode collect)",
         Value = State.AutoCollect,
         Callback = function(on) State.AutoCollect = on end,
-    })
-end)
-
-safe(function()
-    Box.FarmCtl:Toggle({
-        Title = "Punch x4 (eksperimental)",
-        Desc = "Toggle menu tersimpan di konfigurasi. Belum menjalankan 4 hit; input manual tidak ditangani oleh script ini.",
-        Value = State.PunchX4,
-        Callback = function(on)
-            State.PunchX4 = on
-            if Session.Ready then Config.save(true) end
-            notify("Punch x4", on and "Toggle aktif (UI saja; belum terhubung ke punch)." or "Toggle nonaktif.", 4)
-        end,
     })
 end)
 
@@ -13533,6 +13595,8 @@ local function reconnect(show)
         task.wait() -- biar dropdown tampil dulu sebelum scan lengkap (scan menahan layar sebentar)
     end
     -- 2) scan lengkap
+    do local h = Session.FastPunch and Session.FastPunch.Hooked
+        if h and not Refs.Punch then Refs.Punch = h.fn end end
     findRefs()
     if Refs.ScanError then warn("[n4th] " .. Refs.ScanError) end
     watchInventory()
