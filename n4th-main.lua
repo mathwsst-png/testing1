@@ -2552,7 +2552,36 @@ function Session.FastPunch.install()
         return true
     end
     if type(hookfunction) ~= "function" then return false, "Executor tidak punya hookfunction" end
-    FP.Bursting = false
+    FP.Bursting, FP.Queue = false, {}
+    -- antrian auto-break: tiap block yang kena pukul manual diselesaikan sampai hancur,
+    -- walau kamu sudah pindah arah. Hanya aktif selama toggle Fast Punch ON.
+    local function work()
+        pcall(function()
+            while true do
+                local job = table.remove(FP.Queue, 1)
+                if not job then break end
+                local st, tAt = FP.State, FP.tileAt
+                if not (st and st.FastPunch and FP.alive and FP.alive()) then
+                    table.clear(FP.Queue)
+                    break
+                end
+                FP.Key = job.key
+                for _ = 2, math.clamp(st.FastPunchHits or 20, 2, 40) do
+                    task.wait(math.max(st.FastPunchMs or 40, 10) / 1000)
+                    if not (FP.alive() and st.FastPunch) then
+                        table.clear(FP.Queue)
+                        break
+                    end
+                    local fg, bg = tAt("fg", job.x, job.y), tAt("bg", job.x, job.y)
+                    if (fg or 0) == 0 and (bg or 0) == 0 then break end
+                    if job.fg0 ~= 0 and fg ~= job.fg0 then break end
+                    pcall(FP.orig, job.x, job.y, table.unpack(job.extra, 1, job.extra.n))
+                end
+                FP.Key = nil
+            end
+        end)
+        FP.Bursting, FP.Key = false, nil
+    end
     local function wrapper(x, y, ...)
         local extra = table.pack(...)
         local st, tAt = FP.State, FP.tileAt
@@ -2562,26 +2591,19 @@ function Session.FastPunch.install()
         local res = table.pack(orig(x, y, ...))
         if isXY and st and st.FastPunch and not st.ScriptPunch and fg0 ~= nil
             and FP.alive and FP.alive() then
-            -- burst yang sudah jalan di tile yang sama dibiarkan (tahan pukul = tidak numpuk);
-            -- pindah tile -> burst lama dibatalkan, burst baru langsung mulai
             local key = x .. "," .. y
-            if not (FP.Bursting and FP.Key == key) then
-                FP.Gen = (FP.Gen or 0) + 1
-                local gen = FP.Gen
-                FP.Bursting, FP.Key = true, key
-                task.spawn(function()
-                    pcall(function()
-                        for _ = 2, math.clamp(st.FastPunchHits or 20, 2, 40) do
-                            task.wait(math.max(st.FastPunchMs or 40, 10) / 1000)
-                            if FP.Gen ~= gen or not (FP.alive() and st.FastPunch) then break end
-                            local fg, bg = tAt("fg", x, y), tAt("bg", x, y)
-                            if (fg or 0) == 0 and (bg or 0) == 0 then break end
-                            if fg0 ~= 0 and fg ~= fg0 then break end
-                            pcall(orig, x, y, table.unpack(extra, 1, extra.n))
-                        end
-                    end)
-                    if FP.Gen == gen then FP.Bursting, FP.Key = false, nil end
-                end)
+            if key ~= FP.Key then
+                local dup = false
+                for _, j in ipairs(FP.Queue) do
+                    if j.key == key then dup = true break end
+                end
+                if not dup and #FP.Queue < 30 then
+                    table.insert(FP.Queue, { key = key, x = x, y = y, fg0 = fg0, extra = extra })
+                end
+            end
+            if not FP.Bursting then
+                FP.Bursting = true
+                task.spawn(work)
             end
         end
         return table.unpack(res, 1, res.n)
@@ -9658,7 +9680,7 @@ Box.FastPunch = box(FarmTab, "Fast Punch (pukul manual)", true)
 safe(function()
     Box.FastPunch:Toggle({
         Title = "Fast Punch / Turbo Hit",
-        Desc = "Jika aktif, setiap kamu memukul block APA PUN secara manual, karakter memukul beberapa kali berturut-turut dengan jeda pendek. Tidak terkait Auto Farm.",
+        Desc = "Jika aktif, setiap block yang kamu pukul manual (apa pun) langsung dipukul berturut-turut sampai hancur, dan tetap diselesaikan walau kamu pindah arah. Tidak terkait Auto Farm.",
         Value = State.FastPunch,
         Callback = function(on)
             State.FastPunch = on and true or false
