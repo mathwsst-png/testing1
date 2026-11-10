@@ -1,3 +1,4 @@
+
 local G = (getgenv and getgenv()) or _G
 for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi lama
     if G[key] and G[key].Cleanup then pcall(G[key].Cleanup) end
@@ -2535,42 +2536,53 @@ local function sendSetTile(layer, x, y, id)
     return true
 end
 
--- ===== FAST PUNCH (4x hit saat pukul manual di block apa pun) =====
-Session.FastPunch = Session.FastPunch or { Hooked = nil, Bursting = false }
+-- ===== FAST PUNCH (burst saat pukul manual di block apa pun) =====
+-- Hook dipasang SEKALI dan dibagi lintas eksekusi (getgenv), supaya re-execute tidak
+-- menumpuk hook lama / memasang hook di fungsi yang salah (klon orig).
+Session.FastPunch = Session.FastPunch or { Hooked = nil }
 function Session.FastPunch.install()
+    local G = (type(getgenv) == "function" and getgenv()) or _G
+    G.__n4thFP = G.__n4thFP or {}
+    local FP = G.__n4thFP
+    -- referensi "hidup" -> selalu menunjuk eksekusi script terbaru
+    FP.State, FP.alive, FP.tileAt = State, alive, tileAt
     local fn = Refs.Punch
     if not fn then return false, "Fungsi pukul game belum ketemu" end
-    local cur = Session.FastPunch.Hooked
-    if cur and rawequal(cur.fn, fn) then return true end
+    if FP.fn and (rawequal(FP.fn, fn) or rawequal(FP.orig, fn)) then
+        Session.FastPunch.Hooked = { fn = FP.fn }
+        return true
+    end
     if type(hookfunction) ~= "function" then return false, "Executor tidak punya hookfunction" end
-    local orig
+    FP.Bursting = false
     local function wrapper(x, y, ...)
         local extra = table.pack(...)
+        local st, tAt = FP.State, FP.tileAt
         local isXY = type(x) == "number" and type(y) == "number"
-        local fg0 = isXY and tileAt("fg", x, y) or nil
+        local fg0 = (isXY and tAt) and tAt("fg", x, y) or nil
+        local orig = FP.orig
         local res = table.pack(orig(x, y, ...))
-        if isXY and alive() and State.FastPunch and not State.ScriptPunch
-            and not Session.FastPunch.Bursting and fg0 ~= nil then
-            Session.FastPunch.Bursting = true
+        if isXY and st and st.FastPunch and not st.ScriptPunch and not FP.Bursting
+            and fg0 ~= nil and FP.alive and FP.alive() then
+            FP.Bursting = true
             task.spawn(function()
                 pcall(function()
-                    for _ = 2, math.clamp(State.FastPunchHits or 15, 2, 30) do
-                        task.wait(math.max(State.FastPunchMs or 110, 20) / 1000)
-                        if not (alive() and State.FastPunch) then break end
-                        local fg, bg = tileAt("fg", x, y), tileAt("bg", x, y)
+                    for _ = 2, math.clamp(st.FastPunchHits or 15, 2, 30) do
+                        task.wait(math.max(st.FastPunchMs or 110, 20) / 1000)
+                        if not (FP.alive() and st.FastPunch) then break end
+                        local fg, bg = tAt("fg", x, y), tAt("bg", x, y)
                         if (fg or 0) == 0 and (bg or 0) == 0 then break end
                         if fg0 ~= 0 and fg ~= fg0 then break end
                         pcall(orig, x, y, table.unpack(extra, 1, extra.n))
                     end
                 end)
-                Session.FastPunch.Bursting = false
+                FP.Bursting = false
             end)
         end
         return table.unpack(res, 1, res.n)
     end
     local ok, res = pcall(hookfunction, fn, wrapper)
     if not ok then return false, tostring(res) end
-    orig = res
+    FP.orig, FP.fn = res, fn
     Session.FastPunch.Hooked = { fn = fn }
     return true
 end
