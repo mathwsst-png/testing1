@@ -640,7 +640,7 @@ local State = {
     CalibY = 0,
     AntiAfk = true,
     FastPunch = false,            -- 4x hit cepat saat pukul MANUAL (bukan Auto Farm)
-    FastPunchHits = 4,
+    FastPunchHits = 15,
     FastPunchMs = 110,
     MutePunch = true,
     Visual = true,                -- animasi tangan saat break / place / tanam / panen (tampilan saja)
@@ -2554,7 +2554,7 @@ function Session.FastPunch.install()
             Session.FastPunch.Bursting = true
             task.spawn(function()
                 pcall(function()
-                    for _ = 2, math.clamp(State.FastPunchHits or 4, 2, 8) do
+                    for _ = 2, math.clamp(State.FastPunchHits or 15, 2, 30) do
                         task.wait(math.max(State.FastPunchMs or 110, 20) / 1000)
                         if not (alive() and State.FastPunch) then break end
                         local fg, bg = tileAt("fg", x, y), tileAt("bg", x, y)
@@ -9639,7 +9639,7 @@ Box.FarmSpeed = box(FarmTab, "Mode & Kecepatan", false)
 Box.FastPunch = box(FarmTab, "Fast Punch (pukul manual)", true)
 safe(function()
     Box.FastPunch:Toggle({
-        Title = "Fast Punch / 4x Hit",
+        Title = "Fast Punch / 15x Hit",
         Desc = "Jika aktif, setiap kamu memukul block APA PUN secara manual, karakter memukul beberapa kali berturut-turut dengan jeda pendek. Tidak terkait Auto Farm.",
         Value = State.FastPunch,
         Callback = function(on)
@@ -9656,8 +9656,8 @@ safe(function()
 end)
 addNumber(Box.FastPunch, {
     Title = "Jumlah Hit",
-    Desc = "Total pukulan per satu hit manual (default 4)",
-    Min = 2, Max = 8, Step = 1, Default = State.FastPunchHits,
+    Desc = "Total pukulan per satu hit manual (default 15)",
+    Min = 2, Max = 30, Step = 1, Default = State.FastPunchHits,
     Callback = function(v) State.FastPunchHits = math.floor(v) end,
 })
 addNumber(Box.FastPunch, {
