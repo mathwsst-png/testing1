@@ -671,7 +671,7 @@ local Misc = {
     UpHeld = false,   -- tombol ▲ di layar ditahan
     DownHeld = false, -- tombol ▼ di layar ditahan
     CustomName = true,          -- watermark nama (selalu aktif, mati hanya saat script ditutup)
-    NameText = "NVMX-X",  -- teks watermark
+    NameText = "n4th",  -- teks watermark
 }
 
 -- Auto Clear World
@@ -2566,9 +2566,13 @@ function Session.FastPunch.install()
                     break
                 end
                 FP.Key = job.key
-                for _ = 2, math.clamp(st.FastPunchHits or 12, 2, 100) do
-                    -- tanpa jeda ms: hanya yield 1 frame per pukulan supaya game tidak freeze
-                    task.wait()
+                for _ = 2, math.clamp(st.FastPunchHits or 12, 2, 40) do
+                    -- pacing global: jarak antar SEMUA pukulan (punyamu + burst) >= jeda,
+                    -- supaya tidak saling bertabrakan dan ditolak server
+                    local gap = math.max(st.FastPunchMs or 190, 50) / 1000
+                    while os.clock() - (FP.Last or 0) < gap and FP.alive() and st.FastPunch do
+                        task.wait()
+                    end
                     if not (FP.alive() and st.FastPunch) then
                         table.clear(FP.Queue)
                         break
@@ -9561,8 +9565,8 @@ do (function()
     end
     local ok = pcall(function()
         WindUI:Popup({
-            Title = "NVMX-X",
-            Icon = "layers",
+            Title = "n4th",
+            Icon = "languages",
             Content = "Pilih bahasa menu\nChoose menu language",
             Buttons = {
                 { Title = "Indonesia", Variant = I18N.Lang == "id" and "Primary" or "Secondary",
@@ -9581,14 +9585,14 @@ end)() end
 
 Session.InitStep = "membuat menu WindUI"
 local Window = I18N.wrap(WindUI:CreateWindow({
-    Title = "NVMX-X",
-    Icon = "layers",
-    Author = "NVMX-X | Interface",
+    Title = "n4th",
+    Icon = "sprout",
+    Author = "v5.9.0 | Tester",
     Folder = "n4thOpus",
-    Size = UDim2.fromOffset(760, 500),
+    Size = UDim2.fromOffset(640, 380),
     Theme = "Dark",
     Transparent = true,
-    SideBarWidth = 190,
+    SideBarWidth = 150,
     ToggleKey = Enum.KeyCode.Insert,  -- PC: tekan Insert untuk buka/tutup menu
 }))
 UI.Window = Window
@@ -9596,8 +9600,8 @@ UI.Window = Window
 -- Cadangan PC: kalau tombol susah dicari, tekan Insert.
 pcall(function()
     Window:EditOpenButton({
-        Title = "NVMX-X",
-        Icon = "layers",
+        Title = "n4th",
+        Icon = "sprout",
         Draggable = true,
         OnlyMobile = false,
     })
@@ -9703,12 +9707,12 @@ end)
 addNumber(Box.FastPunch, {
     Title = "Jumlah Hit",
     Desc = "Maks pukulan per block; berhenti otomatis begitu block hancur (default 12)",
-    Min = 2, Max = 100, Step = 1, Default = State.FastPunchHits,
+    Min = 2, Max = 40, Step = 1, Default = State.FastPunchHits,
     Callback = function(v) State.FastPunchHits = math.floor(v) end,
 })
 addNumber(Box.FastPunch, {
     Title = "Jeda antar Hit (ms)",
-    Desc = "Tidak dipakai Fast Punch lagi (burst tanpa jeda). Hanya mengatur kecepatan Auto Break Block",
+    Desc = "Default 190 = batas server (~0,19 dtk). Turunkan pelan-pelan (170, 150, ...) selama block tetap hancur",
     Min = 50, Max = 400, Step = 5, Default = State.FastPunchMs,
     Callback = function(v) State.FastPunchMs = math.floor(v) end,
 })
