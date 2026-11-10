@@ -5099,6 +5099,9 @@ local function clearBreakTile(t)
     local layer, id = clearLayerAt(x, y)
     if not layer then return end
     local hits, maxHits = 0, hitsNeeded(id) * 3 + 6
+    -- Auto Break Block (target 1 jenis): multi-hit beruntun sampai hancur, jeda = slider Fast Punch;
+    -- tile yang terlewat dicoba lagi cepat (bukan dilewati lama)
+    local pace = Clear.TargetId and math.max(State.FastPunchMs or 190, 50) or nil
     while Clear.Running and alive() do
         if Clear.TargetId and raymanOn() then
             stopClear("Lepas Rayman's Fist dulu agar block lain tidak ikut terkena.")
@@ -5108,7 +5111,7 @@ local function clearBreakTile(t)
         if not layer then return end
         local r = tryBreak(x, y, not Clear.TargetId and Clear.IncludeBg, Clear.TargetId)
         if r == nil then
-            skipTile(Clear.Skip, idx, 60)
+            skipTile(Clear.Skip, idx, pace and 8 or 60)
             return
         end
         if r == "broke" then
@@ -5126,11 +5129,11 @@ local function clearBreakTile(t)
             hits += 1
             Clear.Status = "Pukul " .. itemName(id) .. " (" .. x .. "," .. y .. ")"
             if hits > maxHits then
-                skipTile(Clear.Skip, idx, 45)
+                skipTile(Clear.Skip, idx, pace and 5 or 45)
                 return
             end
         end
-        if not waitAuto(State.BreakMs) then return end
+        if not waitAuto(pace or State.BreakMs) then return end
         if r == "broke" then
             local s = playerState()
             if not s or not s.grounded then return end -- jatuh, cek ulang posisi
