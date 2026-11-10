@@ -1,4 +1,3 @@
-
 local G = (getgenv and getgenv()) or _G
 for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi lama
     if G[key] and G[key].Cleanup then pcall(G[key].Cleanup) end
@@ -641,8 +640,8 @@ local State = {
     CalibY = 0,
     AntiAfk = true,
     FastPunch = false,            -- 4x hit cepat saat pukul MANUAL (bukan Auto Farm)
-    FastPunchHits = 15,
-    FastPunchMs = 110,
+    FastPunchHits = 20,
+    FastPunchMs = 40,
     MutePunch = true,
     Visual = true,                -- animasi tangan saat break / place / tanam / panen (tampilan saja)
     LiteMode = false,
@@ -2561,22 +2560,29 @@ function Session.FastPunch.install()
         local fg0 = (isXY and tAt) and tAt("fg", x, y) or nil
         local orig = FP.orig
         local res = table.pack(orig(x, y, ...))
-        if isXY and st and st.FastPunch and not st.ScriptPunch and not FP.Bursting
-            and fg0 ~= nil and FP.alive and FP.alive() then
-            FP.Bursting = true
-            task.spawn(function()
-                pcall(function()
-                    for _ = 2, math.clamp(st.FastPunchHits or 15, 2, 30) do
-                        task.wait(math.max(st.FastPunchMs or 110, 20) / 1000)
-                        if not (FP.alive() and st.FastPunch) then break end
-                        local fg, bg = tAt("fg", x, y), tAt("bg", x, y)
-                        if (fg or 0) == 0 and (bg or 0) == 0 then break end
-                        if fg0 ~= 0 and fg ~= fg0 then break end
-                        pcall(orig, x, y, table.unpack(extra, 1, extra.n))
-                    end
+        if isXY and st and st.FastPunch and not st.ScriptPunch and fg0 ~= nil
+            and FP.alive and FP.alive() then
+            -- burst yang sudah jalan di tile yang sama dibiarkan (tahan pukul = tidak numpuk);
+            -- pindah tile -> burst lama dibatalkan, burst baru langsung mulai
+            local key = x .. "," .. y
+            if not (FP.Bursting and FP.Key == key) then
+                FP.Gen = (FP.Gen or 0) + 1
+                local gen = FP.Gen
+                FP.Bursting, FP.Key = true, key
+                task.spawn(function()
+                    pcall(function()
+                        for _ = 2, math.clamp(st.FastPunchHits or 20, 2, 40) do
+                            task.wait(math.max(st.FastPunchMs or 40, 10) / 1000)
+                            if FP.Gen ~= gen or not (FP.alive() and st.FastPunch) then break end
+                            local fg, bg = tAt("fg", x, y), tAt("bg", x, y)
+                            if (fg or 0) == 0 and (bg or 0) == 0 then break end
+                            if fg0 ~= 0 and fg ~= fg0 then break end
+                            pcall(orig, x, y, table.unpack(extra, 1, extra.n))
+                        end
+                    end)
+                    if FP.Gen == gen then FP.Bursting, FP.Key = false, nil end
                 end)
-                FP.Bursting = false
-            end)
+            end
         end
         return table.unpack(res, 1, res.n)
     end
@@ -9651,7 +9657,7 @@ Box.FarmSpeed = box(FarmTab, "Mode & Kecepatan", false)
 Box.FastPunch = box(FarmTab, "Fast Punch (pukul manual)", true)
 safe(function()
     Box.FastPunch:Toggle({
-        Title = "Fast Punch / 15x Hit",
+        Title = "Fast Punch / Turbo Hit",
         Desc = "Jika aktif, setiap kamu memukul block APA PUN secara manual, karakter memukul beberapa kali berturut-turut dengan jeda pendek. Tidak terkait Auto Farm.",
         Value = State.FastPunch,
         Callback = function(on)
@@ -9668,14 +9674,14 @@ safe(function()
 end)
 addNumber(Box.FastPunch, {
     Title = "Jumlah Hit",
-    Desc = "Total pukulan per satu hit manual (default 15)",
-    Min = 2, Max = 30, Step = 1, Default = State.FastPunchHits,
+    Desc = "Maks pukulan per satu hit manual; berhenti otomatis begitu block hancur (default 20)",
+    Min = 2, Max = 40, Step = 1, Default = State.FastPunchHits,
     Callback = function(v) State.FastPunchHits = math.floor(v) end,
 })
 addNumber(Box.FastPunch, {
     Title = "Jeda antar Hit (ms)",
-    Desc = "100-150 ideal. Terlalu kecil bisa ditolak server",
-    Min = 40, Max = 300, Step = 5, Default = State.FastPunchMs,
+    Desc = "Default 40 = turbo. Kalau block tidak hancur / pukulan ditolak, naikkan (60-120)",
+    Min = 10, Max = 300, Step = 5, Default = State.FastPunchMs,
     Callback = function(v) State.FastPunchMs = math.floor(v) end,
 })
 if State.FastPunch then safe(function() pcall(Session.FastPunch.install) end) end
