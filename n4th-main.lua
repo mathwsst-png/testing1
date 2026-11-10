@@ -671,7 +671,7 @@ local Misc = {
     UpHeld = false,   -- tombol ▲ di layar ditahan
     DownHeld = false, -- tombol ▼ di layar ditahan
     CustomName = true,          -- watermark nama (selalu aktif, mati hanya saat script ditutup)
-    NameText = "n4th",  -- teks watermark
+    NameText = "NVMX-X",  -- teks watermark
 }
 
 -- Auto Clear World
@@ -9565,8 +9565,8 @@ do (function()
     end
     local ok = pcall(function()
         WindUI:Popup({
-            Title = "n4th",
-            Icon = "languages",
+            Title = "NVMX-X",
+            Icon = "layers",
             Content = "Pilih bahasa menu\nChoose menu language",
             Buttons = {
                 { Title = "Indonesia", Variant = I18N.Lang == "id" and "Primary" or "Secondary",
@@ -9585,14 +9585,14 @@ end)() end
 
 Session.InitStep = "membuat menu WindUI"
 local Window = I18N.wrap(WindUI:CreateWindow({
-    Title = "n4th",
-    Icon = "sprout",
-    Author = "v5.9.0 | Tester",
+    Title = "NVMX-X",
+    Icon = "layers",
+    Author = "NVMX-X | Interface",
     Folder = "n4thOpus",
-    Size = UDim2.fromOffset(640, 380),
+    Size = UDim2.fromOffset(760, 500),
     Theme = "Dark",
     Transparent = true,
-    SideBarWidth = 150,
+    SideBarWidth = 190,
     ToggleKey = Enum.KeyCode.Insert,  -- PC: tekan Insert untuk buka/tutup menu
 }))
 UI.Window = Window
@@ -9600,8 +9600,8 @@ UI.Window = Window
 -- Cadangan PC: kalau tombol susah dicari, tekan Insert.
 pcall(function()
     Window:EditOpenButton({
-        Title = "n4th",
-        Icon = "sprout",
+        Title = "NVMX-X",
+        Icon = "layers",
         Draggable = true,
         OnlyMobile = false,
     })
