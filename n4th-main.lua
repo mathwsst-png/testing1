@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-11-lite-perf-2-stable"
+Session.Build = "2026-11-11-lite-perf-3-diag"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -2012,8 +2012,11 @@ local function isPunchFn(fn)
     if not ok or type(consts) ~= "table" then return false end
     local hasVend, hasMark = false, false
     for _, c in pairs(consts) do
-        if type(c) == "string" and c:lower():find("empty", 1, true) and c:lower():find("vending", 1, true) then hasVend = true
-        elseif c == "newCrack" or c == "HarvestProvider" then hasMark = true end
+        if type(c) == "string" then
+            local lc = c:lower()
+            if lc:find("vending", 1, true) and (lc:find("empty", 1, true) or lc:find("first", 1, true)) then hasVend = true
+            elseif c == "newCrack" or c == "HarvestProvider" or lc:find("crack", 1, true) then hasMark = true end
+        end
     end
     return hasVend and hasMark
 end
@@ -4827,7 +4830,15 @@ local function clearCanBreak(id)
     local h = (it.kind == "seed") and 20 or it.hits
     if type(h) == "number" and h > 0 then return true end
     local w = Refs.World
-    return (it.staffHits and w and w.areas and w.areas.staff) and true or false
+    if (it.staffHits and w and w.areas and w.areas.staff) then return true end
+    -- FIX: setelah update game, field `hits` bisa tidak ada / berganti nama. Anggap bisa dipecah
+    -- kecuali jelas tidak (hits <= 0, bedrock, unbreakable), sama seperti canBreak() milik Auto Farm.
+    if h == nil then
+        local nm = type(it.name) == "string" and it.name:lower() or ""
+        if nm:find("bedrock", 1, true) or it.unbreakable or it.indestructible or it.invincible then return false end
+        return true
+    end
+    return false
 end
 
 function Auto.worldBreakOptions(background)
@@ -11109,6 +11120,102 @@ Box.ConnCfg = box(ConnTab, "Config", true)
 Box.ConnCalib = box(ConnTab, "Koreksi posisi", false)
 Box.ConnLang = box(ConnTab, "Bahasa / Language", false)
 
+-- DIAGNOSA: kumpulkan data untuk mencari tahu kenapa fungsi pukul / daftar block tidak ketemu.
+function Session.diagnose()
+    local out = {}
+    local function add(t) out[#out + 1] = t end
+    add("== n4th diagnosa == build " .. tostring(Session.Build))
+    add("ItemDB hilang saat start: " .. tostring(Session.ItemDBMissing == true))
+    add("Referensi: " .. refsText())
+    local src = Session.ItemDBSource
+    if type(src) == "table" then
+        local n, withHits, noHits, samples = 0, 0, 0, {}
+        for id, it in pairs(src) do
+            if type(id) == "number" and type(it) == "table" then
+                n += 1
+                if type(rawget(it, "hits")) == "number" then withHits += 1 else noHits += 1 end
+                if #samples < 3 and rawget(it, "solid") == true and rawget(it, "kind") ~= "seed" then
+                    local keys = {}
+                    for k, v in pairs(it) do
+                        if type(v) ~= "table" and type(v) ~= "function" then keys[#keys + 1] = tostring(k) .. "=" .. tostring(v) end
+                    end
+                    table.sort(keys)
+                    samples[#samples + 1] = "#" .. id .. " " .. table.concat(keys, ",", 1, math.min(#keys, 16))
+                end
+            end
+        end
+        add(("ItemDB: %d item | hits angka=%d | tanpa hits=%d"):format(n, withHits, noHits))
+        for _, line in ipairs(samples) do add("  contoh block: " .. line) end
+    else
+        add("ItemDB sumber: tidak ada")
+    end
+    local ok, ids = pcall(function() return (Auto.worldBreakOptions(false)) end)
+    local w = Refs.World
+    add(("World: %s %sx%s | block yang bisa dipilih Auto Break: %s"):format(tostring(w and w.name), tostring(w and w.w),
+        tostring(w and w.h), ok and tostring(#ids) or ("error " .. tostring(ids))))
+    local fgTypes = {}
+    if w and type(w.fg) == "table" then
+        local seen = {}
+        for y = 0, math.min(w.h - 1, 60) do
+            local row = w.fg[y]
+            for x = 0, w.w - 1 do
+                local id = row and row[x]
+                if id and id ~= 0 and not seen[id] and #fgTypes < 6 then
+                    seen[id] = true
+                    local it = ItemDB[id]
+                    fgTypes[#fgTypes + 1] = ("#%d %s hits=%s kind=%s"):format(id, tostring(it and it.name), tostring(it and it.hits), tostring(it and it.kind))
+                end
+            end
+        end
+    end
+    for _, line in ipairs(fgTypes) do add("  fg: " .. line) end
+    add("Executor: getgc=" .. type(getgc) .. " filtergc=" .. type(filtergc) .. " getconnections=" .. type(getconnections)
+        .. " hookfunction=" .. type(hookfunction) .. " getconstants=" .. type((debug and debug.getconstants) or getconstants)
+        .. " getupvalues=" .. type((debug and debug.getupvalues) or getupvalues))
+    -- kandidat fungsi pukul: konstanta mengandung vending / crack / punch
+    local cands = 0
+    if type(getgc) == "function" then
+        local okg, objs = pcall(getgc, true)
+        if okg and type(objs) == "table" then
+            local visited = 0
+            for _, f in pairs(objs) do
+                visited += 1
+                if visited % 3000 == 0 then task.wait() end
+                if type(f) == "function" and cands < 8 then
+                    local consts = getconsts(f)
+                    local hit = false
+                    for _, c in pairs(consts) do
+                        if type(c) == "string" then
+                            local lc = c:lower()
+                            if lc:find("vending", 1, true) or lc:find("crack", 1, true) or lc:find("harvestprovider", 1, true) then hit = true break end
+                        end
+                    end
+                    if hit then
+                        cands += 1
+                        local list = {}
+                        for _, c in pairs(consts) do
+                            if type(c) == "string" and #c < 50 then list[#list + 1] = c end
+                            if #list >= 30 then break end
+                        end
+                        local src2 = "?"
+                        if debug and type(debug.info) == "function" then
+                            local oks, sv = pcall(debug.info, f, "s")
+                            if oks then src2 = tostring(sv) end
+                        end
+                        add(("  kandidat pukul #%d [%s]: %s"):format(cands, src2, table.concat(list, " | ")))
+                    end
+                end
+            end
+        end
+    end
+    if cands == 0 then add("  kandidat pukul: tidak ada fungsi dengan konstanta vending/crack") end
+    local text = table.concat(out, "\n")
+    print(text)
+    local clip = setclipboard or toclipboard or (syn and syn.write_clipboard)
+    if type(clip) == "function" then pcall(clip, text) end
+    return text
+end
+
 local function reconnect(show)
     -- hentikan Clear / Farmer dulu
     if Clear.Running then stopClear("Dihentikan: hubungkan ulang ke game") end
@@ -11146,6 +11253,19 @@ local function reconnect(show)
     print("[n4th] " .. Session.Build .. " | scanned=" .. tostring(Refs.ScanCount) .. " | " .. refsText())
     if show then notify(show, refsText(), 5) end
 end
+
+safe(function()
+    Box.ConnMain:Button({
+        Title = "Diagnosa (salin ke clipboard)",
+        Desc = "Kumpulkan info kenapa Pukul / daftar block tidak ketemu, lalu tempel ke chat",
+        Callback = function()
+            task.spawn(function()
+                local ok, res = pcall(Session.diagnose)
+                notify("Diagnosa", ok and "Selesai: sudah disalin ke clipboard & dicetak di console (F9)" or tostring(res), 6)
+            end)
+        end,
+    })
+end)
 
 safe(function()
     Box.ConnMain:Button({
