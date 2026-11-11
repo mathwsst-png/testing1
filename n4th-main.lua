@@ -567,8 +567,15 @@ do
     end
     WorldRemotes = ReplicatedStorage:FindFirstChild("WorldRemotes")
     SetTileRemote = WorldRemotes and WorldRemotes:FindFirstChild("SetTile")
-    local _, itemDB, itemModule = loadModule(Shared, "ItemDB", true)
-    ItemDB = itemDB
+    -- FIX: ItemDB gagal ditemukan tidak lagi mematikan seluruh script (menu tetap muncul).
+    local okDB, _, itemDB, itemModule = pcall(loadModule, Shared, "ItemDB", true)
+    if okDB and type(itemDB) == "table" then
+        ItemDB = itemDB
+    else
+        Session.ItemDBMissing = true
+        warn("[n4th] ItemDB TIDAK ketemu (" .. tostring(_) .. "). Menu tetap dibuka, tapi fitur farming belum akan jalan. Tutup game, masuk lagi sampai benar-benar di dalam world, lalu execute ulang.")
+        ItemDB = {}
+    end
     -- Modul yang terpisah folder tetap bisa dicari melalui indeks client.
     Shared = (itemModule and itemModule.Parent) or Shared
     local _, inventory = loadModule(Shared, "Inventory", false)
