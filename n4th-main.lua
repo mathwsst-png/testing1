@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-11-lite-perf-2"
+Session.Build = "2026-11-11-lite-perf-3"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -500,23 +500,27 @@ do
     end
     local function scanRuntime(retry)
         if runtimeComplete and not retry then return end
-        if os.clock() - lastGC < 3 or type(getgc) ~= "function" then return end
+        -- getgc penuh sangat berat di Delta: cukup sekali saat startup (bukan tiap modul).
+        if Session.RuntimeScanned or type(getgc) ~= "function" then return end
+        Session.RuntimeScanned = true
         lastGC = os.clock()
+        local scanStop = math.huge
         Session.step("memindai memori game (bagian terberat, mohon tunggu)", true)
         local ok, objects = pcall(getgc, true)
         if not ok or type(objects) ~= "table" then ok, objects = pcall(getgc) end
         if not ok or type(objects) ~= "table" then return end
         runtimeMatches = {}
         runtimeComplete = true
+        scanStop = os.clock() + 8
         local visited = 0
         for _, value in pairs(objects) do
-            if not alive() or os.clock() >= moduleDeadline then runtimeComplete = false break end
+            if not alive() or os.clock() >= moduleDeadline or os.clock() >= scanStop then runtimeComplete = false break end
             if type(value) == "table" then
                 Session.ModuleScan.Tables += 1
                 inspectValue(runtimeMatches, value)
             end
             visited += 1
-            if visited % 1000 == 0 then task.wait() end
+            if visited % 500 == 0 then Session.step("memindai memori game: " .. visited .. " objek", true) end
         end
         lastGC = os.clock()
     end
