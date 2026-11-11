@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-11-lite-perf-5-itemdb"
+Session.Build = "2026-11-11-lite-perf-6-names"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -2198,9 +2198,36 @@ end
 ---------------------------------------------------------------------
 -- ITEM & INVENTORI
 ---------------------------------------------------------------------
+local NAME_KEYS = { "name", "Name", "displayName", "DisplayName", "display_name", "title", "Title", "label", "Label", "itemName", "ItemName", "n", "nm", "dn" }
+local NAME_SKIP = { icon = true, image = true, texture = true, sound = true, sfx = true, desc = true, description = true, tip = true,
+    kind = true, type = true, category = true, rarity = true, tag = true, tags = true, anim = true, model = true, id = true }
+local itemNameCache = {}
 local function itemName(id)
+    local cached = itemNameCache[id]
+    if cached then return cached end
     local it = ItemDB[id]
-    return (it and it.name) or ("Item #" .. tostring(id))
+    local found
+    if type(it) == "string" and it ~= "" then
+        found = it
+    elseif type(it) == "table" then
+        for _, k in ipairs(NAME_KEYS) do
+            local v = it[k]
+            if type(v) == "string" and v ~= "" then found = v break end
+        end
+        if not found then
+            -- Fallback: string pertama yang tampak seperti nama (bukan URL/aset, bukan deskripsi panjang).
+            local best
+            for k, v in pairs(it) do
+                if type(v) == "string" and #v >= 2 and #v <= 40 and not v:find("rbxasset") and not v:find("://")
+                    and v:find("%a") and not NAME_SKIP[tostring(k):lower()] then
+                    if not best or tostring(k) < best.k then best = { k = tostring(k), v = v } end
+                end
+            end
+            found = best and best.v
+        end
+    end
+    if found then itemNameCache[id] = found return found end
+    return "Item #" .. tostring(id)
 end
 
 local function invCount(id)
