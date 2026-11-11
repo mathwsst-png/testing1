@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-11-lite-perf-3-diag"
+Session.Build = "2026-11-11-lite-perf-4-bg"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -2629,7 +2629,7 @@ end
 
 -- Pukul 1 kali. Hasil: "hit" / "broke" / nil
 -- includeBg = ikut pecah background
-local function tryBreak(x, y, includeBg, onlyId)
+local function tryBreak(x, y, includeBg, onlyId, onlyLayer)
     if includeBg == nil then includeBg = State.BreakBackground end
     local key = x .. "," .. y
     local fg = tileAt("fg", x, y)
@@ -2642,7 +2642,7 @@ local function tryBreak(x, y, includeBg, onlyId)
         layer, id = "bg", bg
     end
     if not layer or not canBreak(id) then return nil end
-    if onlyId and (layer ~= "fg" or id ~= onlyId) then return nil end
+    if onlyId and (layer ~= (onlyLayer or "fg") or id ~= onlyId) then return nil end
 
     -- tunggu sebentar kalau tile baru di-place
     local t = PlacedAt[key]
@@ -2654,7 +2654,7 @@ local function tryBreak(x, y, includeBg, onlyId)
 
     if onlyId and (not Clear.Running or Clear.TargetId ~= onlyId or not Refs.Punch
         or not Refs.World or Refs.World.fg ~= Clear.TargetGrid or Refs.World.name ~= Clear.TargetWorld
-        or tileAt("fg", x, y) ~= onlyId) then return nil end
+        or tileAt(onlyLayer or "fg", x, y) ~= onlyId) then return nil end
     if onlyId then
         local ray = rawget(Refs.World, "raymanOn")
         if type(ray) == "function" then
@@ -4843,13 +4843,15 @@ end
 
 function Auto.worldBreakOptions(background)
     local w, counts, ids = Refs.World, {}, {}
-    if not w or type(w.fg) ~= "table" then return ids, counts end
+    local layers, bgCounts, bgEligible = {}, {}, {}
+    if not w or type(w.fg) ~= "table" then return ids, counts, layers end
     local spawn, grid, eligible = w.spawn, w.fg, {}
     local budget = { next = os.clock() + 0.001 }
     local sx, sy
     if spawn and (typeof(spawn) == "Vector2" or type(spawn) == "table") then sx, sy = spawn.X, spawn.Y end
     for y = 0, (w.h or 0) - 1 do
         local row = grid[y]
+        local bgRow = type(w.bg) == "table" and w.bg[y] or nil
         for x = 0, (w.w or 0) - 1 do
             local id = row and row[x]
             if id and id ~= 0 then
@@ -4859,18 +4861,31 @@ function Auto.worldBreakOptions(background)
                 end
                 if eligible[id] and not (sx == x and sy == y) then counts[id] = (counts[id] or 0) + 1 end
             end
+            -- FIX: background (wallpaper dll) ikut dihitung sebagai pilihan target
+            local bid = bgRow and bgRow[x]
+            if bid and bid ~= 0 then
+                if bgEligible[bid] == nil then
+                    local item = ItemDB[bid]
+                    bgEligible[bid] = item ~= nil and clearCanBreak(bid) or false
+                end
+                if bgEligible[bid] then bgCounts[bid] = (bgCounts[bid] or 0) + 1 end
+            end
             if background then
                 Session.scanStep(budget, y * w.w + x + 1)
-                if not alive() or Refs.World ~= w or w.fg ~= grid then return {}, {} end
+                if not alive() or Refs.World ~= w or w.fg ~= grid then return {}, {}, {} end
             end
         end
+    end
+    for id in pairs(counts) do layers[id] = "fg" end
+    for id, n in pairs(bgCounts) do
+        if not counts[id] then counts[id], layers[id] = n, "bg" end
     end
     for id in pairs(counts) do ids[#ids + 1] = id end
     table.sort(ids, function(a, b)
         local an, bn = itemName(a):lower(), itemName(b):lower()
         return an == bn and a < b or an < bn
     end)
-    return ids, counts
+    return ids, counts, layers
 end
 
 -- Layer yang dipecah: fg dulu, lalu bg
@@ -4883,6 +4898,13 @@ local function clearLayerAt(x, y)
     end
     local fg = tileAt("fg", x, y)
     if fg == nil then return nil end
+    if Clear.TargetId and Clear.TargetLayer == "bg" then
+        -- target background (wallpaper): hanya bisa dipukul kalau block depannya kosong
+        if fg ~= 0 then return nil end
+        local bgId = tileAt("bg", x, y)
+        if bgId == Clear.TargetId and clearCanBreak(bgId) then return "bg", bgId end
+        return nil
+    end
     if fg ~= 0 then
         if Clear.TargetId and fg ~= Clear.TargetId then return nil end
         if clearCanBreak(fg) then return "fg", fg end
@@ -4906,7 +4928,7 @@ local function scanTopRow()
         for x = 0, W - 1 do
             local fid = frow and frow[x] or 0
             local bid = brow and brow[x] or 0
-            if (fid ~= 0 or (Clear.IncludeBg and bid ~= 0)) and clearLayerAt(x, y)
+            if (fid ~= 0 or ((Clear.IncludeBg or Clear.TargetLayer == "bg") and bid ~= 0)) and clearLayerAt(x, y)
                 and not skipped(Clear.Skip, y * W + x, now) then
                 return y
             end
@@ -4928,7 +4950,7 @@ local function countRemaining()
         for x = 0, W - 1 do
             local fid = frow and frow[x] or 0
             local bid = brow and brow[x] or 0
-            if (fid ~= 0 or (Clear.IncludeBg and bid ~= 0)) and clearLayerAt(x, y) then n += 1 end
+            if (fid ~= 0 or ((Clear.IncludeBg or Clear.TargetLayer == "bg") and bid ~= 0)) and clearLayerAt(x, y) then n += 1 end
             scanned += 1
             Session.scanStep(budget, scanned)
             if not alive() or not Clear.Running or Refs.World ~= w or w.fg ~= grid then return -1 end
@@ -5056,7 +5078,7 @@ local function clearBreakTile(t)
         end
         layer, id = clearLayerAt(x, y)
         if not layer then return end
-        local r = tryBreak(x, y, not Clear.TargetId and Clear.IncludeBg, Clear.TargetId)
+        local r = tryBreak(x, y, (not Clear.TargetId and Clear.IncludeBg) or (Clear.TargetLayer == "bg"), Clear.TargetId, Clear.TargetLayer)
         if r == nil then
             skipTile(Clear.Skip, idx, pace and 8 or 60)
             return
@@ -5128,7 +5150,7 @@ local function updateClearStatus()
         .. "\nDipecah  : " .. Clear.Broken .. "  | collect: " .. State.Collected
         .. "\nSisa     : " .. (Clear.Remaining >= 0 and tostring(Clear.Remaining) or "-")
         .. "  | dilewati: " .. skippedCount(Clear.Skip)
-        .. (Clear.TargetId and ("\nTarget   : " .. itemName(Clear.TargetId)) or "")
+        .. (Clear.TargetId and ("\nTarget   : " .. itemName(Clear.TargetId) .. (Clear.TargetLayer == "bg" and " (background)" or "")) or "")
         .. "\nPijakan  : " .. blockText(Clear.UseBlock and not Clear.TargetId, Clear.ScaffoldId) .. "  | dipasang: " .. Move.Placed
         .. "\nAksi     : " .. Clear.Status
     if txt == lastClearText then return end
@@ -5275,7 +5297,8 @@ local function startClear(targetId)
             setClearVisual()
             return
         end
-        local _, counts = Auto.worldBreakOptions()
+        local _, counts, layers = Auto.worldBreakOptions()
+        Clear.TargetLayer = layers and layers[targetId] or "fg"
         if not counts[targetId] then
             notify("Auto Break Block", "Block pilihan tidak ada di world ini. Refresh daftar block.", 4)
             setClearVisual()
@@ -5303,6 +5326,7 @@ local function startClear(targetId)
     Clear.TopRow = -1
     Clear.DirRow, Clear.Dir = nil, nil
     Clear.Status = "Mulai..."
+    if not targetId then Clear.TargetLayer = nil end
     Clear.TargetId = targetId
     Clear.TargetGrid = targetId and Refs.World.fg or nil
     Clear.TargetWorld = targetId and Refs.World.name or nil
@@ -8689,7 +8713,7 @@ do (function()
     safe(function()
         UI.WorldBreakItems = controls:Dropdown({
             Title = "Block di world",
-            Desc = "Pilih satu jenis block. Angka x menunjukkan jumlah di world aktif.",
+            Desc = "Pilih satu jenis block atau wallpaper (BG). Angka x menunjukkan jumlah di world aktif. Wallpaper hanya bisa dipecah kalau block depannya kosong.",
             Values = { "(memuat block world...)" },
             Callback = function(value)
                 if UI.WorldBreakRefreshing then return end
@@ -8715,12 +8739,12 @@ do (function()
         if not force and signature and sameWorld then
             if Clear.Running or Window.Closed or not FarmTab.Selected or os.clock() - (refreshedAt or 0) < 15 then return end
         end
-        local ids, counts = Auto.worldBreakOptions(true)
+        local ids, counts, layers = Auto.worldBreakOptions(true)
         if Refs.World ~= w or (w and w.fg ~= grid) then return end
         lastWorld, lastGrid, lastName, lastWidth, lastHeight, refreshedAt = w, grid, name, width, height, os.clock()
         local labels = {}
-        for _, id in ipairs(ids) do labels[#labels + 1] = ("%s x%d [%d]"):format(itemName(id), counts[id], id) end
-        if #labels == 0 then labels = { "(belum ada block yang bisa dipecah di world ini)" } end
+        for _, id in ipairs(ids) do labels[#labels + 1] = ("%s%s x%d [%d]"):format(itemName(id), layers[id] == "bg" and " (BG)" or "", counts[id], id) end
+        if #labels == 0 then labels = { "(belum ada block / wallpaper yang bisa dipecah di world ini)" } end
         local current = tostring(Refs.World) .. ":" .. tostring(Refs.World and Refs.World.name) .. ":" .. table.concat(labels, "|")
         if not force and current == signature then return end
         local ok, err = UI.exec(function()
