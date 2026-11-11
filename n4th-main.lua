@@ -700,6 +700,8 @@ local Misc = {
 -- Auto Clear World
 local Clear = {
     Why = { izin = 0, jurang = 0, nopath = 0, batas = 0, gagal = 0 }, -- DEBUG: alasan tile dilewati
+    Learned = {},             -- id tile yang terbukti jadi lantai (karakter berdiri di atasnya)
+    Dbg = "-",                -- DEBUG: info A* terakhir
     Running = false,
     IncludeBg = true,         -- ikut pecah background
     UseBlock = true,          -- taruh block kalau tidak ada pijakan
@@ -3715,7 +3717,12 @@ end
 
 -- Ada pijakan aman di bawah tile ini?
 local function realSupport(x, y)
-    return not hazardAt(x, y + 1) and (solidAt(x, y + 1) or platformAt(x, y + 1))
+    if hazardAt(x, y + 1) then return false end
+    if solidAt(x, y + 1) or platformAt(x, y + 1) then return true end
+    -- FIX: tile yang terbukti dipijak karakter (grounded) dianggap lantai, walau data item
+    -- tidak menandainya solid (mis. Dirt / rumput permanen di world ini).
+    local lid = fgIdAt(x, y + 1)
+    return lid ~= 0 and Clear.Learned[lid] == true
 end
 
 -- Target kelihatan dari badan? (tidak terhalang lantai / atap padat di antaranya)
@@ -3757,21 +3764,7 @@ end
 local function scaffoldId()
     local id, use
     if Clear.Running then
-        -- FIX: pijakan juga aktif di mode Auto Break Block (dulu mati kalau ada target)
-        id, use = Clear.ScaffoldId, Clear.UseBlock
-        if use and (not id or invCount(id) <= 0) then
-            -- belum dipilih / habis: otomatis pakai Dirt dari inventori
-            if Clear.DirtId == nil then
-                Clear.DirtId = false
-                for did, it in pairs(ItemDB) do
-                    if type(it) == "table" and it.solid and it.kind ~= "seed" and itemName(did):lower() == "dirt" then
-                        Clear.DirtId = did
-                        break
-                    end
-                end
-            end
-            if Clear.DirtId and invCount(Clear.DirtId) > 0 then id = Clear.DirtId end
-        end
+        id, use = Clear.ScaffoldId, Clear.UseBlock and not Clear.TargetId
     elseif Farmer.Running then
         id, use = Farmer.ScaffoldId, Farmer.UseBlock
     end -- Bangun Lahan tidak pakai pijakan (jalan di atas baris yang sedang dibangun)
@@ -4518,6 +4511,10 @@ local function travelGroup(sx, sy, group, R, useBlock, skipTbl, failTbl, route)
     end
     -- tidak ada jalan ke grup ini
     if Clear.Running then
+        local nc = 0
+        for _ in pairs(closed or {}) do nc += 1 end
+        Clear.Dbg = ("start=(%d,%d) lantai=%s jelajah=%d titik, tujuan=(%d,%d)"):format(
+            sx, sy, tostring(realSupport(sx, sy)), nc, first.x, first.y)
         if exhausted then Clear.Why.nopath += #group else Clear.Why.batas += #group end
     end
     for _, t in ipairs(group) do skipTile(skipTbl, t.idx, exhausted and 60 or 30) end
@@ -5209,9 +5206,10 @@ local function updateClearStatus()
         .. "\nSisa     : " .. (Clear.Remaining >= 0 and tostring(Clear.Remaining) or "-")
         .. "  | dilewati: " .. skippedCount(Clear.Skip)
         .. (Clear.TargetId and ("\nTarget   : " .. itemName(Clear.TargetId) .. (Clear.TargetLayer == "bg" and " (background)" or "")) or "")
-        .. "\nPijakan  : " .. blockText(Clear.UseBlock, scaffoldId() or Clear.ScaffoldId or Clear.DirtId or nil) .. "  | dipasang: " .. Move.Placed
+        .. "\nPijakan  : " .. blockText(Clear.UseBlock and not Clear.TargetId, Clear.ScaffoldId) .. "  | dipasang: " .. Move.Placed
         .. ("\nAlasan skip: izin=%d jurang=%d tanpa-jalan=%d batas-A*=%d gagal-jalan=%d"):format(
             Clear.Why.izin, Clear.Why.jurang, Clear.Why.nopath, Clear.Why.batas, Clear.Why.gagal)
+        .. "\nA*       : " .. Clear.Dbg
         .. "\nAksi     : " .. Clear.Status
     if txt == lastClearText then return end
     lastClearText = txt
@@ -5252,6 +5250,13 @@ local function clearLoop()
             continue
         end
         releaseInput()
+        do -- pelajari tile lantai dari posisi karakter yang benar-benar menapak
+            local lfoot = floor(s.y + 0.01)
+            for _, lc in ipairs({ floor(s.x - 0.3), floor(s.x + 0.3 - 0.0001) }) do
+                local lid = fgIdAt(lc, lfoot)
+                if lid ~= 0 and not hazardAt(lc, lfoot) then Clear.Learned[lid] = true end
+            end
+        end
 
         local topRow = scanTopRow()
         if not Clear.Running or not alive() then break end
@@ -5370,14 +5375,8 @@ local function startClear(targetId)
             return
         end
     end
-    Clear.DirtId = nil
-    Clear.TargetId = targetId -- supaya scaffoldId() bisa dicek sebelum loop jalan
-    Clear.Running = true
-    local hasScaffold = Clear.UseBlock and scaffoldId() ~= nil
-    Clear.Running = false
-    Clear.TargetId = nil
-    if Clear.UseBlock and not hasScaffold then
-        notify(targetId and "Auto Break Block" or "Auto Clear", "Block pijakan belum dipilih / habis (Dirt juga tidak ada di inventori): jalan tanpa block pijakan", 5)
+    if not targetId and Clear.UseBlock and (not Clear.ScaffoldId or invCount(Clear.ScaffoldId) <= 0) then
+        notify("Auto Clear", "Block pijakan belum dipilih / habis: jalan tanpa block pijakan", 5)
     end
     if Pabrik.Running and Pabrik.stop then Pabrik.stop("Dihentikan karena Auto Clear dimulai") end
     if Build.Running and Build.stop then Build.stop("Dihentikan karena Auto Clear dimulai") end
