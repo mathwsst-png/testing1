@@ -3757,7 +3757,21 @@ end
 local function scaffoldId()
     local id, use
     if Clear.Running then
-        id, use = Clear.ScaffoldId, Clear.UseBlock and not Clear.TargetId
+        -- FIX: pijakan juga aktif di mode Auto Break Block (dulu mati kalau ada target)
+        id, use = Clear.ScaffoldId, Clear.UseBlock
+        if use and (not id or invCount(id) <= 0) then
+            -- belum dipilih / habis: otomatis pakai Dirt dari inventori
+            if Clear.DirtId == nil then
+                Clear.DirtId = false
+                for did, it in pairs(ItemDB) do
+                    if type(it) == "table" and it.solid and it.kind ~= "seed" and itemName(did):lower() == "dirt" then
+                        Clear.DirtId = did
+                        break
+                    end
+                end
+            end
+            if Clear.DirtId and invCount(Clear.DirtId) > 0 then id = Clear.DirtId end
+        end
     elseif Farmer.Running then
         id, use = Farmer.ScaffoldId, Farmer.UseBlock
     end -- Bangun Lahan tidak pakai pijakan (jalan di atas baris yang sedang dibangun)
@@ -5195,7 +5209,7 @@ local function updateClearStatus()
         .. "\nSisa     : " .. (Clear.Remaining >= 0 and tostring(Clear.Remaining) or "-")
         .. "  | dilewati: " .. skippedCount(Clear.Skip)
         .. (Clear.TargetId and ("\nTarget   : " .. itemName(Clear.TargetId) .. (Clear.TargetLayer == "bg" and " (background)" or "")) or "")
-        .. "\nPijakan  : " .. blockText(Clear.UseBlock and not Clear.TargetId, Clear.ScaffoldId) .. "  | dipasang: " .. Move.Placed
+        .. "\nPijakan  : " .. blockText(Clear.UseBlock, scaffoldId() or Clear.ScaffoldId or Clear.DirtId or nil) .. "  | dipasang: " .. Move.Placed
         .. ("\nAlasan skip: izin=%d jurang=%d tanpa-jalan=%d batas-A*=%d gagal-jalan=%d"):format(
             Clear.Why.izin, Clear.Why.jurang, Clear.Why.nopath, Clear.Why.batas, Clear.Why.gagal)
         .. "\nAksi     : " .. Clear.Status
@@ -5356,8 +5370,14 @@ local function startClear(targetId)
             return
         end
     end
-    if not targetId and Clear.UseBlock and (not Clear.ScaffoldId or invCount(Clear.ScaffoldId) <= 0) then
-        notify("Auto Clear", "Block pijakan belum dipilih / habis: jalan tanpa block pijakan", 5)
+    Clear.DirtId = nil
+    Clear.TargetId = targetId -- supaya scaffoldId() bisa dicek sebelum loop jalan
+    Clear.Running = true
+    local hasScaffold = Clear.UseBlock and scaffoldId() ~= nil
+    Clear.Running = false
+    Clear.TargetId = nil
+    if Clear.UseBlock and not hasScaffold then
+        notify(targetId and "Auto Break Block" or "Auto Clear", "Block pijakan belum dipilih / habis (Dirt juga tidak ada di inventori): jalan tanpa block pijakan", 5)
     end
     if Pabrik.Running and Pabrik.stop then Pabrik.stop("Dihentikan karena Auto Clear dimulai") end
     if Build.Running and Build.stop then Build.stop("Dihentikan karena Auto Clear dimulai") end
