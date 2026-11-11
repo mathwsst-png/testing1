@@ -4482,7 +4482,15 @@ local function travelGroup(sx, sy, group, R, useBlock, skipTbl, failTbl, route)
     local path, exhausted, closed = astar(sx, sy, goals, first.x, first.y, R, useBlock, route)
     if path then
         if #path == 0 then
-            for _, t in ipairs(group) do skipTile(skipTbl, t.idx, 20) end
+            -- FIX: A* menganggap sudah cukup dekat (hitungan per-tile), tapi posisi asli karakter
+            -- mepet tepi tile sehingga target belum masuk jangkauan pukul. Jangan langsung di-skip
+            -- (bikin karakter diam): geser dulu ke tengah tile, baru skip kalau sudah di tengah.
+            local cs = playerState()
+            if cs and abs(cs.x - (sx + 0.5)) > 0.2 then
+                execWalk(sx, sy)
+            else
+                for _, t in ipairs(group) do skipTile(skipTbl, t.idx, 20) end
+            end
         elseif not followPath(path) then
             failTbl[first.idx] = (failTbl[first.idx] or 0) + 1
             if failTbl[first.idx] >= 3 then
