@@ -699,6 +699,7 @@ local Misc = {
 
 -- Auto Clear World
 local Clear = {
+    Why = { izin = 0, jurang = 0, nopath = 0, batas = 0, gagal = 0 }, -- DEBUG: alasan tile dilewati
     Running = false,
     IncludeBg = true,         -- ikut pecah background
     UseBlock = true,          -- taruh block kalau tidak ada pijakan
@@ -4494,6 +4495,7 @@ local function travelGroup(sx, sy, group, R, useBlock, skipTbl, failTbl, route)
         elseif not followPath(path) then
             failTbl[first.idx] = (failTbl[first.idx] or 0) + 1
             if failTbl[first.idx] >= 3 then
+                if Clear.Running then Clear.Why.gagal += #group end
                 for _, t in ipairs(group) do skipTile(skipTbl, t.idx, 40) end
             end
         end
@@ -4501,6 +4503,9 @@ local function travelGroup(sx, sy, group, R, useBlock, skipTbl, failTbl, route)
         return true
     end
     -- tidak ada jalan ke grup ini
+    if Clear.Running then
+        if exhausted then Clear.Why.nopath += #group else Clear.Why.batas += #group end
+    end
     for _, t in ipairs(group) do skipTile(skipTbl, t.idx, exhausted and 60 or 30) end
     if exhausted and w then storeReach(sy * w.w + sx, R, useBlock, closed) end
     releaseInput()
@@ -5031,10 +5036,12 @@ local function bandTargets(top, bottom, dir, filter)
             if clearLayerAt(x, y) and not skipped(Clear.Skip, idx, now) then
                 if filter and not filter[idx] then
                     skipTile(Clear.Skip, idx, 60) -- di seberang jurang / tidak ada jalan
+                    Clear.Why.jurang += 1
                 elseif canWorkAt(x, y) then
                     list[#list + 1] = { x = x, y = y, idx = idx }
                 else
                     skipTile(Clear.Skip, idx, 300) -- tidak ada izin
+                    Clear.Why.izin += 1
                 end
             end
             visited += 1
@@ -5071,6 +5078,7 @@ local function clearInReach(s, bottom, dir)
                         }
                     else
                         skipTile(Clear.Skip, idx, 300)
+                        Clear.Why.izin += 1
                     end
                 end
             end
@@ -5188,6 +5196,8 @@ local function updateClearStatus()
         .. "  | dilewati: " .. skippedCount(Clear.Skip)
         .. (Clear.TargetId and ("\nTarget   : " .. itemName(Clear.TargetId) .. (Clear.TargetLayer == "bg" and " (background)" or "")) or "")
         .. "\nPijakan  : " .. blockText(Clear.UseBlock and not Clear.TargetId, Clear.ScaffoldId) .. "  | dipasang: " .. Move.Placed
+        .. ("\nAlasan skip: izin=%d jurang=%d tanpa-jalan=%d batas-A*=%d gagal-jalan=%d"):format(
+            Clear.Why.izin, Clear.Why.jurang, Clear.Why.nopath, Clear.Why.batas, Clear.Why.gagal)
         .. "\nAksi     : " .. Clear.Status
     if txt == lastClearText then return end
     lastClearText = txt
@@ -5358,6 +5368,7 @@ local function startClear(targetId)
     table.clear(BadEdge)
     table.clear(BreakTimes)
     Clear.Broken = 0
+    for k in pairs(Clear.Why) do Clear.Why[k] = 0 end
     Clear.Remaining = -1
     Clear.TopRow = -1
     Clear.DirRow, Clear.Dir = nil, nil
