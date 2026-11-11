@@ -3849,7 +3849,7 @@ end
 --   gap    : lompati lubang 1-2 tile
 --   stair  : tangga lahan: lompat naik 2 lewat lubang ke lorong setinggi 1 tile
 --   pillar : lompat lalu taruh block di bawah kaki (naik 1)
-local MAX_EXPAND = 4000
+local MAX_EXPAND = 8000
 local BLOCK_COST = 2
 
 local function reachOffsets(R)
