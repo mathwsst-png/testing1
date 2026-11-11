@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-09-inventory-ui-budget-1"
+Session.Build = "2026-11-11-lite-perf-1"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -25,7 +25,7 @@ end
 function Session.scanStep(budget, visited)
     if visited % 64 ~= 0 or os.clock() < budget.next then return end
     task.wait()
-    budget.next = os.clock() + 0.0015
+    budget.next = os.clock() + 0.001
 end
 Session.InitStep = "layanan game"
 function Session.download(url)
@@ -1771,7 +1771,7 @@ do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
         if Config.Found then Config.LastSnapshot = copy(Config.Data) end
         task.spawn(function()
             while alive() do
-                task.wait(3)
+                task.wait(10)
                 if Config.AutoSave and alive() then Config.save(false) end
             end
         end)
@@ -1886,7 +1886,7 @@ do (function()
         while alive() do
             local text = table.remove(Hook.Queue, 1)
             if not text then
-                task.wait(0.5)
+                task.wait(1)
             else
                 local req = requester()
                 if not req then
@@ -2985,7 +2985,7 @@ function Drops.remoteTick(list, s)
     local ptx, pty = getPlayerTile()
     local now = os.clock()
     local R = (State.CollectRadius or 3) + 0.2
-    local world, budget, targets, scheduled = Refs.World, { next = os.clock() + 0.0015 }, {}, 0
+    local world, budget, targets, scheduled = Refs.World, { next = os.clock() + 0.001 }, {}, 0
     if farmArea and ptx then
         for key in pairs(offs) do
             local o = OffsetParse[key]
@@ -3056,7 +3056,7 @@ local function collectTick()
     local seen = {}
     local previous = Drops.seen
     local membership = previous and next(previous) and {} or nil
-    local world, budget = Refs.World, { next = os.clock() + 0.0015 }
+    local world, budget = Refs.World, { next = os.clock() + 0.001 }
     for index, d in ipairs(list) do
         if membership then membership[d] = true end
         if type(d) == "table" and type(d.x) == "number" and math.abs(d.x - cx) <= 1.5 and math.abs(d.y - cy) <= 1.5 then
@@ -3081,7 +3081,7 @@ task.spawn(function()
             Drops.LastErrorAt = os.clock()
             warn("[n4th] Collect: " .. tostring(err))
         end
-        task.wait(0.05)
+        task.wait(0.1)
     end
 end)
 
@@ -3796,7 +3796,7 @@ end
 --   gap    : lompati lubang 1-2 tile
 --   stair  : tangga lahan: lompat naik 2 lewat lubang ke lorong setinggi 1 tile
 --   pillar : lompat lalu taruh block di bawah kaki (naik 1)
-local MAX_EXPAND = 8000
+local MAX_EXPAND = 4000
 local BLOCK_COST = 2
 
 local function reachOffsets(R)
@@ -3952,7 +3952,7 @@ local function astar(sx, sy, goals, gx, gy, R, useBlock, route)
     hn = heapPush(hf, hi, hn, h(sx, sy), startI)
     local expanded = 0
     local now = os.clock()
-    local nextSlice, popped = now + 0.0015, 0
+    local nextSlice, popped = now + 0.001, 0
 
     while hn > 0 do
         popped += 1
@@ -3961,7 +3961,7 @@ local function astar(sx, sy, goals, gx, gy, R, useBlock, route)
         if popped % 8 == 0 and os.clock() >= nextSlice then
             task.wait()
             if not autoOn() or Refs.World ~= w or w.fg ~= grid or w.name ~= worldName then return nil, false, closed end
-            nextSlice = os.clock() + 0.0015
+            nextSlice = os.clock() + 0.001
         end
         local cur
         cur, hn = heapPop(hf, hi, hn)
@@ -4014,7 +4014,7 @@ local function reachableTileSet(closed, W, R)
     local dxm, dyLo, dyHi = reachOffsets(R)
     local n = 0
     local w, grid = Refs.World, Refs.World and Refs.World.fg
-    local budget = { next = os.clock() + 0.0015 }
+    local budget = { next = os.clock() + 0.001 }
     for i in pairs(closed) do
         local x, y = i % W, i // W
         for dy = dyLo, dyHi do
@@ -4812,7 +4812,7 @@ function Auto.worldBreakOptions(background)
     local w, counts, ids = Refs.World, {}, {}
     if not w or type(w.fg) ~= "table" then return ids, counts end
     local spawn, grid, eligible = w.spawn, w.fg, {}
-    local budget = { next = os.clock() + 0.0015 }
+    local budget = { next = os.clock() + 0.001 }
     local sx, sy
     if spawn and (typeof(spawn) == "Vector2" or type(spawn) == "table") then sx, sy = spawn.X, spawn.Y end
     for y = 0, (w.h or 0) - 1 do
@@ -4867,7 +4867,7 @@ local function scanTopRow()
     local w = Refs.World
     local W, H = w.w, w.h
     local now = os.clock()
-    local grid, budget = w.fg, { next = now + 0.0015 }
+    local grid, budget = w.fg, { next = now + 0.001 }
     for y = 0, H - 1 do
         local frow, brow = w.fg[y], w.bg[y]
         for x = 0, W - 1 do
@@ -4889,7 +4889,7 @@ local function countRemaining()
     if not w then return -1 end
     local W, H = w.w, w.h
     local n, scanned = 0, 0
-    local grid, budget = w.fg, { next = os.clock() + 0.0015 }
+    local grid, budget = w.fg, { next = os.clock() + 0.001 }
     for y = 0, H - 1 do
         local frow, brow = w.fg[y], w.bg[y]
         for x = 0, W - 1 do
@@ -4933,7 +4933,7 @@ local function bandTargets(top, bottom, dir, filter)
     local W = w.w
     local list = {}
     local now = os.clock()
-    local grid, budget, visited = w.fg, { next = now + 0.0015 }, 0
+    local grid, budget, visited = w.fg, { next = now + 0.001 }, 0
     for y = top, math.min(bottom, w.h - 1) do
         for x = 0, W - 1 do
             local idx = y * W + x
@@ -6539,7 +6539,7 @@ do
 
     -- Daftar pilihan seed fokus: seed yang punya pohon siap panen sekarang.
     function AutoDrop.focusLabels(force)
-        if force or not AutoDrop.ReadyCounts or os.clock() - (AutoDrop.ScanAt or 0) > 2.5 then
+        if force or not AutoDrop.ReadyCounts or os.clock() - (AutoDrop.ScanAt or 0) > 6 then
             AutoDrop.ReadyCounts = AutoDrop.scanReady()
             AutoDrop.ScanAt = os.clock()
         end
@@ -8094,12 +8094,19 @@ local function nameKeep(e, holder, size, isTag)
 end
 
 -- Animasi tiap frame: gradient mengalir + denyut halus
+local holderAt, animAt = 0, 0
 table.insert(Connections, RunService.RenderStepped:Connect(function()
     if not alive() or not Misc.CustomName then return end
-    local tag, panelName = nameHolders()
-    NameFx.tag = nameKeep(NameFx.tag, tag, 22, true)
-    NameFx.panel = nameKeep(NameFx.panel, panelName, 21, false)
-    local t = os.clock() - NameFx.t0
+    local now = os.clock()
+    if now - holderAt > 0.5 then -- cari holder cukup 2x per detik
+        holderAt = now
+        local tag, panelName = nameHolders()
+        NameFx.tag = nameKeep(NameFx.tag, tag, 22, true)
+        NameFx.panel = nameKeep(NameFx.panel, panelName, 21, false)
+    end
+    if now - animAt < 1 / 30 then return end -- animasi cukup 30 fps
+    animAt = now
+    local t = now - NameFx.t0
     local offset = Vector2.new(((t * 0.45) % 2) - 1, 0)
     local pulse = 1 + 0.045 * math.sin(t * 3.2)
     local tg, pn = NameFx.tag, NameFx.panel
@@ -8673,7 +8680,7 @@ do (function()
         local sameWorld = w == lastWorld and grid == lastGrid and name == lastName and width == lastWidth and height == lastHeight
         -- Jangan scan dunia pada tab tersembunyi atau selama target break terkunci.
         if not force and signature and sameWorld then
-            if Clear.Running or Window.Closed or not FarmTab.Selected or os.clock() - (refreshedAt or 0) < 8 then return end
+            if Clear.Running or Window.Closed or not FarmTab.Selected or os.clock() - (refreshedAt or 0) < 15 then return end
         end
         local ids, counts = Auto.worldBreakOptions(true)
         if Refs.World ~= w or (w and w.fg ~= grid) then return end
@@ -8725,7 +8732,7 @@ do (function()
     task.spawn(function()
         while alive() do
             UI.later("worldBreakItems", function() UI.WorldBreakRefresh(false) end)
-            task.wait(3)
+            task.wait(6)
         end
     end)
 end)() end
@@ -9628,11 +9635,16 @@ do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
 
     task.spawn(function()
         while alive() do
-            local here = (Guard.Mode ~= "away" and Guard.Mode ~= "out") and playersHere() or {}
-            local ok, err = pcall(Guard.tick, here)
-            if not ok then warn("[n4th] Penjaga error: " .. tostring(err)) end
-            Guard.updateStatus(here)
-            task.wait(0.5)
+            if not Guard.On and Guard.Mode == "idle" then
+                Guard.Status = "Mati"
+                task.wait(2)
+            else
+                local here = (Guard.Mode ~= "away" and Guard.Mode ~= "out") and playersHere() or {}
+                local ok, err = pcall(Guard.tick, here)
+                if not ok then warn("[n4th] Penjaga error: " .. tostring(err)) end
+                if UI.tabVisible("Penjaga") then Guard.updateStatus(here) end
+                task.wait(Guard.On and 0.75 or 2)
+            end
         end
     end)
 end)() end
@@ -9747,7 +9759,7 @@ local Scan = {
     Auto = false,
     Layer = "Semua",      -- "Semua" | "Depan" | "Background"
     Filter = "",          -- cari nama item
-    Every = 2,
+    Every = 5,
     Limit = 60,           -- maksimal baris per daftar
     Last = nil,
 }
@@ -9810,7 +9822,7 @@ do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
     local function scanBlocks()
         local w = Refs.World
         if not w or type(w.fg) ~= "table" or type(w.w) ~= "number" then return nil end
-        local grid, budget = w.fg, { next = os.clock() + 0.0015 }
+        local grid, budget = w.fg, { next = os.clock() + 0.001 }
         local fgC, bgC, nf, nb = {}, {}, 0, 0
         local trees = {} -- [seed] = { r = siap, g = tumbuh, nxt = detik ke panen berikutnya }
         local st = workspace:GetServerTimeNow()
@@ -10105,6 +10117,12 @@ do (function()
     task.spawn(function()
         local lastReport = os.clock()
         while alive() do
+            local need = Hook.ReportMin > 0 or (UI.Window and not UI.Window.Closed and UI.tabVisible("Statistik"))
+            if not need then
+                lastReport = os.clock()
+                task.wait(3)
+                continue
+            end
             local ok, txt = pcall(Stats.text)
             if ok and UI.StatsText and txt ~= Stats.Shown then
                 Stats.Shown = txt
@@ -10117,7 +10135,7 @@ do (function()
             elseif Hook.ReportMin <= 0 then
                 lastReport = os.clock()
             end
-            task.wait(1)
+            task.wait(Hook.ReportMin > 0 and 3 or 1)
         end
     end)
 end)() end
@@ -11087,7 +11105,10 @@ local function reconnect(show)
     -- 2) scan lengkap
     do local h = Session.FastPunch and Session.FastPunch.Hooked
         if h and not Refs.Punch then Refs.Punch = h.fn end end
-    findRefs()
+    if not (Refs.World and Refs.Inv and Refs.Punch and Refs.SetTile and Refs.State and Refs.Menu
+        and Refs.Gems and Refs.Hud and Refs.Others) then
+        findRefs()
+    end
     if Refs.ScanError then warn("[n4th] " .. Refs.ScanError) end
     watchInventory()
     pcall(doInvRefresh, true) -- langsung di thread ini (thread INIT / antrian UI), bukan thread tombol
@@ -11412,6 +11433,7 @@ end)
 
 task.spawn(function()
     while alive() do
+        if UI.Window and UI.Window.Closed then task.wait(2) continue end
         if not State.Running then updateStatus() end
         Auto.updateClearStatus()
         Auto.updateFarmerStatus()
