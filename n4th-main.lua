@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-11-lite-perf-4-bg"
+Session.Build = "2026-11-11-lite-perf-5-itemdb"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -593,9 +593,10 @@ end
 -- Metadata item bersifat tetap selama satu sesi. Salin hanya ID yang dipakai;
 -- membaca tabel lintas VM untuk setiap tile jauh lebih mahal daripada cache lokal.
 do
-    local source = ItemDB
-    Session.ItemDBSource = source
+    Session.ItemDBSource = ItemDB
     ItemDB = setmetatable({}, { __index = function(cache, id)
+        local source = Session.ItemDBSource
+        if type(source) ~= "table" then return nil end
         local item = source[id]
         if type(item) ~= "table" then return item end
         local copy = {}
@@ -11144,6 +11145,63 @@ Box.ConnCfg = box(ConnTab, "Config", true)
 Box.ConnCalib = box(ConnTab, "Koreksi posisi", false)
 Box.ConnLang = box(ConnTab, "Bahasa / Language", false)
 
+-- FIX: cari ItemDB lewat "sidik jari" ID block yang ada di world (tidak bergantung nama field game).
+function Session.fingerprintItemDB()
+    local w = Refs.World
+    if not w or type(getgc) ~= "function" then return nil, "world / getgc belum siap" end
+    local ids, seen = {}, {}
+    for _, layer in ipairs({ "fg", "bg" }) do
+        local grid = w[layer]
+        if type(grid) == "table" then
+            for y = 0, math.min((w.h or 1) - 1, 80) do
+                local row = grid[y]
+                if row then
+                    for x = 0, (w.w or 1) - 1 do
+                        local id = row[x]
+                        if type(id) == "number" and id > 0 and not seen[id] and #ids < 14 then
+                            seen[id] = true
+                            ids[#ids + 1] = id
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if #ids < 3 then return nil, "world terlalu kosong untuk dicocokkan" end
+    local okg, objs = pcall(getgc, true)
+    if not okg or type(objs) ~= "table" then return nil, "getgc gagal" end
+    local best, bestScore, visited = nil, 0, 0
+    local worldFg, worldBg = w.fg, w.bg
+    for _, t in pairs(objs) do
+        visited += 1
+        if visited % 2500 == 0 then task.wait() end
+        if type(t) == "table" and t ~= Refs.World and t ~= worldFg and t ~= worldBg and t ~= ItemDB then
+            local score = 0
+            for _, id in ipairs(ids) do
+                local okr, v = pcall(rawget, t, id)
+                if okr and type(v) == "table" then score += 1 end
+            end
+            if score > bestScore then best, bestScore = t, score end
+        end
+    end
+    if best and bestScore >= math.max(3, math.floor(#ids * 0.7)) then return best, bestScore .. "/" .. #ids end
+    return nil, "tidak ada tabel yang cocok (skor terbaik " .. bestScore .. "/" .. #ids .. ")"
+end
+
+function Session.fixItemDB()
+    if not Session.ItemDBMissing then return true end
+    local db, info = Session.fingerprintItemDB()
+    if not db then
+        warn("[n4th] ItemDB belum ketemu lewat sidik jari: " .. tostring(info))
+        return false
+    end
+    Session.ItemDBSource = db
+    table.clear(ItemDB)
+    Session.ItemDBMissing = false
+    print("[n4th] ItemDB ditemukan lewat sidik jari world (" .. tostring(info) .. ")")
+    return true
+end
+
 -- DIAGNOSA: kumpulkan data untuk mencari tahu kenapa fungsi pukul / daftar block tidak ketemu.
 function Session.diagnose()
     local out = {}
@@ -11172,6 +11230,41 @@ function Session.diagnose()
         for _, line in ipairs(samples) do add("  contoh block: " .. line) end
     else
         add("ItemDB sumber: tidak ada")
+    end
+    do
+        local db, info = Session.fingerprintItemDB()
+        add("Sidik jari ItemDB: " .. (db and ("COCOK " .. tostring(info)) or ("tidak ketemu: " .. tostring(info))))
+        if db then
+            local w0, shown = Refs.World, 0
+            local function dump(id)
+                local e = rawget(db, id)
+                if type(e) ~= "table" then return end
+                local keys = {}
+                for k, v in pairs(e) do
+                    local tv = type(v)
+                    keys[#keys + 1] = tostring(k) .. "=" .. ((tv == "table" or tv == "function") and tv or tostring(v))
+                end
+                table.sort(keys)
+                add("  entri #" .. id .. ": " .. table.concat(keys, ", ", 1, math.min(#keys, 24)))
+            end
+            local want = {}
+            for _, layer in ipairs({ "fg", "bg" }) do
+                local grid = w0 and w0[layer]
+                if type(grid) == "table" then
+                    for y = 0, math.min((w0.h or 1) - 1, 60) do
+                        local row = grid[y]
+                        for x = 0, (w0.w or 1) - 1 do
+                            local id = row and row[x]
+                            if type(id) == "number" and id > 0 and not want[id] and shown < 5 then
+                                want[id] = true
+                                shown += 1
+                                dump(id)
+                            end
+                        end
+                    end
+                end
+            end
+        end
     end
     local ok, ids = pcall(function() return (Auto.worldBreakOptions(false)) end)
     local w = Refs.World
@@ -11264,6 +11357,7 @@ local function reconnect(show)
     end
     if Refs.ScanError then warn("[n4th] " .. Refs.ScanError) end
     watchInventory()
+    if Session.ItemDBMissing then pcall(Session.fixItemDB) end
     pcall(doInvRefresh, true) -- langsung di thread ini (thread INIT / antrian UI), bukan thread tombol
     findDropRefs(true)
     Auto.findTreeRefs()
