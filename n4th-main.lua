@@ -4,99 +4,11 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-11-lite-perf-3"
+Session.Build = "2026-11-11-lite-perf-1"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
 end
-
--- Layar loading: muncul langsung supaya executor (Delta) tidak terlihat membeku.
-Session.Loading = { pct = 0, lastYield = 0 }
-do
-    local L = Session.Loading
-    pcall(function()
-        local lp = game:GetService("Players").LocalPlayer
-        local sg = Instance.new("ScreenGui")
-        sg.Name = "n4thLoading"
-        sg.ResetOnSpawn = false
-        sg.IgnoreGuiInset = true
-        sg.DisplayOrder = 2147483647
-        local gh = (gethui or get_hidden_gui)
-        local parent
-        if gh then local ok, r = pcall(gh) if ok then parent = r end end
-        parent = parent or game:GetService("CoreGui")
-        local ok = pcall(function() sg.Parent = parent end)
-        if not ok and lp then sg.Parent = lp:FindFirstChildOfClass("PlayerGui") end
-        local frame = Instance.new("Frame")
-        frame.AnchorPoint = Vector2.new(0.5, 0.5)
-        frame.Position = UDim2.fromScale(0.5, 0.5)
-        frame.Size = UDim2.fromOffset(340, 96)
-        frame.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
-        frame.BorderSizePixel = 0
-        frame.Parent = sg
-        local corner = Instance.new("UICorner") corner.CornerRadius = UDim.new(0, 10) corner.Parent = frame
-        local stroke = Instance.new("UIStroke") stroke.Color = Color3.fromRGB(70, 70, 95) stroke.Parent = frame
-        local title = Instance.new("TextLabel")
-        title.BackgroundTransparency = 1
-        title.Position = UDim2.fromOffset(16, 10)
-        title.Size = UDim2.new(1, -32, 0, 22)
-        title.Font = Enum.Font.GothamBold
-        title.TextSize = 16
-        title.TextColor3 = Color3.fromRGB(240, 240, 255)
-        title.TextXAlignment = Enum.TextXAlignment.Left
-        title.Text = "n4th sedang dimuat..."
-        title.Parent = frame
-        local label = Instance.new("TextLabel")
-        label.BackgroundTransparency = 1
-        label.Position = UDim2.fromOffset(16, 36)
-        label.Size = UDim2.new(1, -32, 0, 18)
-        label.Font = Enum.Font.Gotham
-        label.TextSize = 12
-        label.TextColor3 = Color3.fromRGB(170, 170, 195)
-        label.TextXAlignment = Enum.TextXAlignment.Left
-        label.TextTruncate = Enum.TextTruncate.AtEnd
-        label.Text = "memulai"
-        label.Parent = frame
-        local back = Instance.new("Frame")
-        back.Position = UDim2.new(0, 16, 1, -26)
-        back.Size = UDim2.new(1, -32, 0, 8)
-        back.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
-        back.BorderSizePixel = 0
-        back.Parent = frame
-        local bc = Instance.new("UICorner") bc.CornerRadius = UDim.new(1, 0) bc.Parent = back
-        local bar = Instance.new("Frame")
-        bar.Size = UDim2.fromScale(0, 1)
-        bar.BackgroundColor3 = Color3.fromRGB(110, 140, 255)
-        bar.BorderSizePixel = 0
-        bar.Parent = back
-        local fc = Instance.new("UICorner") fc.CornerRadius = UDim.new(1, 0) fc.Parent = bar
-        L.gui, L.label, L.bar, L.title = sg, label, bar, title
-    end)
-end
-function Session.hideLoading()
-    local L = Session.Loading
-    local gui = L.gui
-    L.gui, L.label, L.bar, L.title = nil, nil, nil, nil
-    if gui then pcall(function() gui:Destroy() end) end
-end
--- Perbarui teks loading lalu beri waktu satu frame supaya layar sempat tergambar.
-function Session.step(text, force)
-    Session.InitStep = text
-    local L = Session.Loading
-    L.pct = L.pct + (95 - L.pct) * 0.04
-    if L.label then
-        pcall(function()
-            L.label.Text = tostring(text)
-            L.bar.Size = UDim2.fromScale(L.pct / 100, 1)
-        end)
-    end
-    local now = os.clock()
-    if force or now - L.lastYield > 0.04 then
-        L.lastYield = now
-        task.wait()
-    end
-end
-task.delay(90, function() if Session.Loading.gui then Session.hideLoading() end end)
 -- Alias executor tetap lokal agar lingkungan game tidak ikut berubah.
 local getgc = getgc or get_gc_objects
 local getmodules = getmodules or get_modules
@@ -115,7 +27,7 @@ function Session.scanStep(budget, visited)
     task.wait()
     budget.next = os.clock() + 0.001
 end
-Session.step("layanan game")
+Session.InitStep = "layanan game"
 function Session.download(url)
     local lastError = "respons kosong"
     local function checked(source)
@@ -191,7 +103,7 @@ do
     assert(LocalPlayer, "[n4th] LocalPlayer belum tersedia. Masuk ke game lalu execute ulang.")
 
     local function requiredChild(parent, name)
-        Session.step(parent:GetFullName() .. "/" .. name)
+        Session.InitStep = parent:GetFullName() .. "/" .. name
         local child = parent:FindFirstChild(name) or parent:WaitForChild(name, 15)
         assert(child, "[n4th] Tidak menemukan " .. Session.InitStep .. " setelah 15 detik.")
         return child
@@ -500,27 +412,22 @@ do
     end
     local function scanRuntime(retry)
         if runtimeComplete and not retry then return end
-        -- getgc penuh sangat berat di Delta: cukup sekali saat startup (bukan tiap modul).
-        if Session.RuntimeScanned or type(getgc) ~= "function" then return end
-        Session.RuntimeScanned = true
+        if os.clock() - lastGC < 3 or type(getgc) ~= "function" then return end
         lastGC = os.clock()
-        local scanStop = math.huge
-        Session.step("memindai memori game (bagian terberat, mohon tunggu)", true)
         local ok, objects = pcall(getgc, true)
         if not ok or type(objects) ~= "table" then ok, objects = pcall(getgc) end
         if not ok or type(objects) ~= "table" then return end
         runtimeMatches = {}
         runtimeComplete = true
-        scanStop = os.clock() + 8
         local visited = 0
         for _, value in pairs(objects) do
-            if not alive() or os.clock() >= moduleDeadline or os.clock() >= scanStop then runtimeComplete = false break end
+            if not alive() or os.clock() >= moduleDeadline then runtimeComplete = false break end
             if type(value) == "table" then
                 Session.ModuleScan.Tables += 1
                 inspectValue(runtimeMatches, value)
             end
             visited += 1
-            if visited % 500 == 0 then Session.step("memindai memori game: " .. visited .. " objek", true) end
+            if visited % 1000 == 0 then task.wait() end
         end
         lastGC = os.clock()
     end
@@ -540,7 +447,7 @@ do
             if not alive() or os.clock() >= moduleDeadline then exportsComplete = false break end
             if not triedModules[object] and clientModule(object) then
                 triedModules[object] = true
-                Session.step("membaca export client " .. object:GetFullName())
+                Session.InitStep = "membaca export client " .. object:GetFullName()
                 local done, ok, value = false, false, nil
                 local worker = task.spawn(function()
                     ok, value = pcall(require, object)
@@ -600,7 +507,7 @@ do
         if runtimeMatches[name] and runtimeMatches[name].Ambiguous then return nil, nil, "beberapa tabel runtime cocok dengan bentuk " .. name end
     end
     local function loadModule(parent, name, required)
-        Session.step("mencari modul " .. name)
+        Session.InitStep = "mencari modul " .. name
         local object, reason = findModule(parent, name)
         local value, shapedObject
         if not object and not reason then value, shapedObject, reason = structuralModule(name) end
@@ -620,7 +527,7 @@ do
             return true, value, shapedObject
         end
         if object then
-            Session.step("memuat " .. object:GetFullName())
+            Session.InitStep = "memuat " .. object:GetFullName()
             local ok, result = pcall(require, object)
             if ok and type(result) == "table" then
                 Session.Modules[name] = object:GetFullName()
@@ -658,7 +565,7 @@ do
     if not GameGui and menuObject then GameGui = menuObject.Parent end
     RolesOk, RolesModule = loadModule(Shared, "Roles", false)
     SfxOk, SfxModule = loadModule(Shared, "Sfx", false)
-    Session.step("modul game siap")
+    Session.InitStep = "modul game siap"
 end
 
 -- Metadata item bersifat tetap selama satu sesi. Salin hanya ID yang dipakai;
@@ -676,7 +583,7 @@ do
     end })
 end
 
-Session.step("WindUI")
+Session.InitStep = "WindUI"
 local WindUI
 do
     -- File tag ini identik dengan release 1.6.66, tanpa redirect unduhan GitHub.
@@ -711,7 +618,7 @@ do
     -- Inisialisasi hanya sekali, setelah respons berhasil dikompilasi.
     WindUI = downloadWindUI()()
 end
-Session.step("config dan referensi game")
+Session.InitStep = "config dan referensi game"
 
 ---------------------------------------------------------------------
 -- PENGATURAN & DATA
@@ -2231,7 +2138,6 @@ local function findRefs()
         Refs.ScanError = "Executor tidak punya getgc()"
         return Refs.World ~= nil, Refs.ScanError
     end
-    Session.step("mencari referensi game (scan memori)", true)
     local gcOk, objects = pcall(getgc, true)
     if not gcOk or type(objects) ~= "table" then gcOk, objects = pcall(getgc) end
     if not gcOk or type(objects) ~= "table" then
@@ -8557,7 +8463,7 @@ do (function()
     if chosen then I18N.remember() end
 end)() end
 
-Session.step("membuat menu WindUI")
+Session.InitStep = "membuat menu WindUI"
 local Window = I18N.wrap(WindUI:CreateWindow({
     Title = "n4th",
     Icon = "sprout",
@@ -8602,7 +8508,6 @@ for _, g in ipairs({
 end
 
 local function makeTab(title, icon, group)
-    Session.step("membuat tab " .. tostring(title))
     local parent = (group and Groups[group]) or Window
     local ok, tab = pcall(function() return parent:Tab({ Title = title, Icon = icon }) end)
     if not ok or not tab then tab = Window:Tab({ Title = title }) end
@@ -11205,10 +11110,8 @@ local function reconnect(show)
         findRefs()
     end
     if Refs.ScanError then warn("[n4th] " .. Refs.ScanError) end
-    Session.step("membaca inventaris", true)
     watchInventory()
     pcall(doInvRefresh, true) -- langsung di thread ini (thread INIT / antrian UI), bukan thread tombol
-    Session.step("mencari drop dan pohon", true)
     findDropRefs(true)
     Auto.findTreeRefs()
     table.clear(DropFailUntil)
@@ -11491,10 +11394,8 @@ end
 
 task.spawn(function()
     local readyDeadline = os.clock() + 12
-    Session.step("menunggu game siap", true)
     while alive() and LocalPlayer:GetAttribute("GameReady") ~= true and os.clock() < readyDeadline do task.wait(0.25) end
     if not alive() then return end
-    Session.step("menyambung ke game", true)
     reconnect("n4th v5.2")
     -- Input dapat tersambung belakangan pada executor yang mulai sebelum client game selesai.
     if not Refs.Punch then
@@ -11559,7 +11460,6 @@ end)
 -- CLEANUP (otomatis saat script dijalankan ulang)
 ---------------------------------------------------------------------
 Session.Cleanup = function()
-    pcall(Session.hideLoading)
     AutoDrop.On, AutoDrop.Cancelled = false, true
     State.Running = false
     Clear.Running = false
@@ -11595,5 +11495,4 @@ end
 
 Session.InitStep = "siap"
 Session.Ready = true
-Session.hideLoading()
 print("[n4th] Menu siap (build " .. Session.Build .. ")")
