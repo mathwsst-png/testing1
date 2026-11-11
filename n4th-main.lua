@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-11-lite-perf-1"
+Session.Build = "2026-11-11-lite-perf-2-stable"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -109,6 +109,21 @@ do
         return child
     end
     PlayerGui = requiredChild(LocalPlayer, "PlayerGui")
+    -- FIX: tunggu game benar-benar siap (GameReady + GameGui) sebelum memindai modul.
+    -- Sebelumnya pemindaian jalan saat game masih loading -> kadang gagal, kadang bisa.
+    do
+        if not game:IsLoaded() then
+            Session.InitStep = "menunggu game selesai dimuat"
+            pcall(function() game.Loaded:Wait() end)
+        end
+        Session.InitStep = "menunggu GameReady / GameGui"
+        local readyBy = os.clock() + 30
+        while alive() and os.clock() < readyBy do
+            if LocalPlayer:GetAttribute("GameReady") == true and PlayerGui:FindFirstChild("GameGui") then break end
+            task.wait(0.25)
+        end
+        task.wait(0.5) -- beri waktu modul client selesai ter-require
+    end
     Shared = ReplicatedStorage:FindFirstChild("Shared") or ReplicatedStorage
     GameGui = PlayerGui:FindFirstChild("GameGui")
     Session.Modules = {}
@@ -11397,6 +11412,29 @@ task.spawn(function()
     while alive() and LocalPlayer:GetAttribute("GameReady") ~= true and os.clock() < readyDeadline do task.wait(0.25) end
     if not alive() then return end
     reconnect("n4th v5.2")
+    -- FIX: kalau WorldMenu.isDown belum terpasang saat start, coba lagi sampai ketemu
+    if not OrigIsDown then
+        task.spawn(function()
+            for _ = 1, 10 do
+                if not alive() or OrigIsDown then return end
+                task.wait(2)
+                local obj = Session.findModule("WorldMenu", PlayerGui:FindFirstChild("GameGui"))
+                if obj then
+                    local ok, mod = pcall(require, obj)
+                    if ok and type(mod) == "table" and type(rawget(mod, "isDown")) == "function" then
+                        MenuModOk, MenuModule = true, mod
+                        OrigIsDown = rawget(mod, "isDown")
+                        mod.isDown = isDownWrapper
+                        print("[n4th] WorldMenu.isDown terpasang (retry)")
+                        return
+                    end
+                end
+            end
+            if alive() and not OrigIsDown then
+                warn("[n4th] WorldMenu.isDown tetap tidak ketemu: Clear/Farmer/Pabrik/Lahan tidak bisa jalan.")
+            end
+        end)
+    end
     -- Input dapat tersambung belakangan pada executor yang mulai sebelum client game selesai.
     if not Refs.Punch then
         task.spawn(function()
