@@ -7048,29 +7048,40 @@ local function routeDropStep()
             q.position or 0, q.armed or 0, q.platform or 0, q.ready or 0))
         return
     end
+    -- Ambil target terjauh searah rute, bukan target terdekat satu per satu.
+    -- Dengan begitu karakter melintasi platform dalam satu perjalanan dan drop di
+    -- sepanjang lintasan ikut terambil oleh collision/pickup game.
+    local leftToRight = RouteDrop.Direction ~= "Kanan → Kiri"
     local target = targets[1]
+    for i = 2, #targets do
+        local candidate = targets[i]
+        if (leftToRight and candidate.x > target.x)
+            or (not leftToRight and candidate.x < target.x) then
+            target = candidate
+        end
+    end
     local tx, ty = math.floor(target.x), math.floor(target.y - 0.475)
     local s = playerState()
     if not s then return end
-    RouteDrop.Status = ("Menuju %s (%d,%d)"):format(itemName(RouteDrop.TargetId), tx, ty)
-    routeDropLog(("Target ditemukan: %s pada (%.2f, %.2f); mencoba jalan ke (%d,%d)"):format(itemName(RouteDrop.TargetId), target.x, target.y, tx, ty), true)
+    RouteDrop.Status = ("Berlari menyusuri jalur %s (%d,%d)"):format(itemName(RouteDrop.TargetId), tx, ty)
+    routeDropLog(("Sweep jalur: %d drop terdeteksi; bergerak langsung ke target terjauh (%.2f, %.2f) -> (%d,%d)"):format(#targets, target.x, target.y, tx, ty), true)
     if walkTo(tx, ty, 35, routeDropLive) then
         RouteDrop.CollectedStops += 1
-        routeDropLog("walkTo target berhasil; menunggu fisika collect.", true)
-        RouteDrop.Skip[target.uid or target] = os.clock() + 2
-        task.wait(0.35) -- beri waktu fisika game mengambil drop saat badan menyentuhnya
+        -- Tandai target tujuan sebentar agar scan berikutnya tidak mengunci
+        -- karakter pada drop yang sama. Tidak ada jeda diam setelah perjalanan.
+        RouteDrop.Skip[target.uid or target] = os.clock() + 1.25
         if invCount(RouteDrop.TargetId) >= 200 then
             local now = playerState()
             local rx, ry
             if now then rx, ry = startNode(now) end
             routeDropDoDrop(rx, ry)
         else
-            RouteDrop.Status = "Melanjutkan tracking jalur"
+            RouteDrop.Status = "Melanjutkan sweep jalur tanpa jeda"
         end
     else
         RouteDrop.Skip[target.uid or target] = os.clock() + 8
-        RouteDrop.Status = "Target tidak terjangkau; mencari drop berikutnya"
-        routeDropLog(("ERROR: walkTo target gagal (%d,%d)."):format(tx, ty), true)
+        RouteDrop.Status = "Target tidak terjangkau; mencari jalur berikutnya"
+        routeDropLog(("ERROR: perjalanan ke target sweep gagal (%d,%d). Periksa jalur/platform."):format(tx, ty), true)
     end
 end
 
