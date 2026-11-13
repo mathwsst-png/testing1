@@ -7059,69 +7059,49 @@ local function routeDropStep()
             q.position or 0, q.armed or 0, q.platform or 0, q.ready or 0))
         return
     end
-    -- Kunci satu baris pijakan: mulai dari baris paling atas, sapu kanan ke kiri,
-    -- lalu pindah ke baris Y berikutnya. Target di baris lain tidak mengubah baris aktif.
-    local rows = {}
-    for _, d in ipairs(targets) do
-        local rowY = routeDropPlatformRow(d)
-        if rowY then rows[rowY] = true end
-    end
-    if not RouteDrop.CurrentRow or not rows[RouteDrop.CurrentRow] then
-        local nextRow
-        for rowY in pairs(rows) do
-            if not RouteDrop.CurrentRow or rowY > RouteDrop.CurrentRow then
-                if not nextRow or rowY < nextRow then nextRow = rowY end
+    -- Jangan mengunci satu baris: platform bisa terpisah atau tidak tersambung.
+    -- Pilih target yang paling dekat dari posisi karakter, lalu uji A* satu per satu.
+    local sx, sy = startNode(state)
+    table.sort(targets, function(a, b)
+        local ax, ay = math.floor(a.x), math.floor(a.y - 0.475)
+        local bx, by = math.floor(b.x), math.floor(b.y - 0.475)
+        local da = math.abs(ax - sx) + math.abs(ay - sy)
+        local db = math.abs(bx - sx) + math.abs(by - sy)
+        return da < db
+    end)
+
+    local tried, moved = 0, false
+    for _, target in ipairs(targets) do
+        if tried >= 6 or not routeDropLive() then break end
+        local tx, ty = math.floor(target.x), math.floor(target.y - 0.475)
+        RouteDrop.Status = ("Mencari jalur ke drop %s (%d,%d)"):format(itemName(RouteDrop.TargetId), tx, ty)
+        routeDropLog(("Coba rute: %d kandidat; target terdekat (%.2f, %.2f) -> (%d,%d)"):format(
+            #targets, target.x, target.y, tx, ty), true)
+        tried += 1
+        if walkTo(tx, ty, 5, routeDropLive) then
+            moved = true
+            RouteDrop.CollectedStops += 1
+            -- Tandai hanya drop tujuan sebentar. Drop lain tetap dipindai agar
+            -- worker bisa menyapu bertahap tanpa menganggap satu baris sudah bersih.
+            RouteDrop.Skip[target.uid or target] = os.clock() + 1.5
+            if invCount(RouteDrop.TargetId) >= 200 then
+                local now = playerState()
+                local rx, ry
+                if now then rx, ry = startNode(now) end
+                routeDropDoDrop(rx, ry)
+            else
+                RouteDrop.Status = "Melanjutkan sweep dari posisi terbaru"
             end
-        end
-        if not nextRow then
-            for rowY in pairs(rows) do
-                if not nextRow or rowY < nextRow then nextRow = rowY end
-            end
-        end
-        RouteDrop.CurrentRow = nextRow
-    end
-    local target
-    local activeRow = RouteDrop.CurrentRow
-    for _, d in ipairs(targets) do
-        if routeDropPlatformRow(d) == activeRow then
-            -- Tujuan adalah ujung KIRI baris. Karakter melintasi satu baris penuh
-            -- dari kanan ke kiri; drop di sepanjang lintasan diambil lewat sentuhan.
-            if not target or d.x < target.x then target = d end
-        end
-    end
-    if not target then
-        RouteDrop.CurrentRow = nil
-        return
-    end
-    local tx, ty = math.floor(target.x), math.floor(target.y - 0.475)
-    local s = playerState()
-    if not s then return end
-    RouteDrop.Status = ("Berlari menyusuri jalur %s (%d,%d)"):format(itemName(RouteDrop.TargetId), tx, ty)
-    routeDropLog(("Sweep jalur: %d drop terdeteksi; bergerak langsung ke target terjauh (%.2f, %.2f) -> (%d,%d)"):format(#targets, target.x, target.y, tx, ty), true)
-    if walkTo(tx, ty, 35, routeDropLive) then
-        RouteDrop.CollectedStops += 1
-        -- Satu perjalanan = satu sapuan baris. Tandai seluruh drop di baris ini
-        -- sementara agar worker langsung berpindah ke baris berikutnya, bukan
-        -- berhenti dan mengejar drop satu per satu. Baris akan discan ulang
-        -- setelah putaran selesai bila masih ada drop yang belum tersentuh.
-        local rowSkipUntil = os.clock() + 5
-        for _, d in ipairs(targets) do
-            if routeDropPlatformRow(d) == activeRow then
-                RouteDrop.Skip[d.uid or d] = rowSkipUntil
-            end
-        end
-        if invCount(RouteDrop.TargetId) >= 200 then
-            local now = playerState()
-            local rx, ry
-            if now then rx, ry = startNode(now) end
-            routeDropDoDrop(rx, ry)
+            break
         else
-            RouteDrop.Status = "Melanjutkan sweep jalur tanpa jeda"
+            RouteDrop.Skip[target.uid or target] = os.clock() + 8
+            routeDropLog(("Rute gagal (%d,%d); lewati sementara dan coba kandidat berikutnya."):format(tx, ty), true)
         end
-    else
-        RouteDrop.Skip[target.uid or target] = os.clock() + 8
-        RouteDrop.Status = "Target tidak terjangkau; mencari jalur berikutnya"
-        routeDropLog(("ERROR: perjalanan ke target sweep gagal (%d,%d). Periksa jalur/platform."):format(tx, ty), true)
+    end
+    if not moved and tried == 0 then
+        RouteDrop.Status = "Tidak ada target yang bisa dicoba saat ini"
+    elseif not moved then
+        RouteDrop.Status = "Mencari target lain yang terjangkau"
     end
 end
 
