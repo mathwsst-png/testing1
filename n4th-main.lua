@@ -7015,8 +7015,15 @@ local function routeDropStep()
         RouteDrop.Status = "Tentukan Drop Point terlebih dahulu"
         return
     end
-    if not Refs.World or not playerState() then
+    if not Refs.World or type(Refs.State) ~= "function" then
         RouteDrop.Status = "Masuk world dan tunggu data karakter"
+        routeDropLog("MENUNGGU: referensi world/state belum siap.")
+        return
+    end
+    local state = playerState()
+    if not state then
+        RouteDrop.Status = "Menunggu data karakter dari Refs.State"
+        routeDropLog("MENUNGGU: Refs.State belum mengembalikan koordinat karakter valid.")
         return
     end
     if not Drops.list then
@@ -9180,14 +9187,17 @@ do (function()
         routeDropLog("PERMINTAAN START diterima dari " .. tostring(source), true)
         local ok, result = pcall(function()
             -- Catat kondisi satu per satu agar titik penolakan terlihat jelas.
-            routeDropLog(("DIAG START: world=%s player=%s target=%s platform=%s dropX=%s dropY=%s guard=%s state=%s clear=%s farmer=%s pabrik=%s build=%s"):
-                format(tostring(Refs.World ~= nil), tostring(playerState() ~= nil), tostring(RouteDrop.TargetId),
+            -- Jangan panggil Refs.State/playerState saat callback UI masih berjalan.
+            -- Pada beberapa versi client, fungsi state dapat yield; itu membuat log Start
+            -- terlihat berhenti tepat setelah "PERMINTAAN START diterima".
+            routeDropLog(("DIAG START PRECHECK: worldRef=%s stateFn=%s target=%s platform=%s dropX=%s dropY=%s guard=%s stateRun=%s clear=%s farmer=%s pabrik=%s build=%s"):
+                format(tostring(Refs.World ~= nil), tostring(type(Refs.State) == "function"), tostring(RouteDrop.TargetId),
                     tostring(RouteDrop.PlatformId), tostring(RouteDrop.DropX), tostring(RouteDrop.DropY),
                     tostring(Guard.Mode), tostring(State.Running), tostring(Clear.Running),
                     tostring(Farmer.Running), tostring(Pabrik.Running), tostring(Build.Running)), true)
 
             local reason
-            if not Refs.World or not playerState() then reason = "Masuk world terlebih dahulu"
+            if not Refs.World or type(Refs.State) ~= "function" then reason = "Masuk world dan tunggu data karakter"
             elseif not RouteDrop.TargetId then reason = "Pilih Seed / Block target"
             elseif not RouteDrop.PlatformId then reason = "Pilih platform pijakan"
             elseif type(RouteDrop.DropX) ~= "number" or type(RouteDrop.DropY) ~= "number" or RouteDrop.DropX < 0 or RouteDrop.DropY < 0 then reason = "Tentukan Drop Point terlebih dahulu"
