@@ -804,6 +804,7 @@ local RouteDrop = {
     CollectedStops = 0,
     Dropped = 0,
     Skip = {},
+    CurrentRow = nil, -- baris pijakan yang sedang disapu, dari atas ke bawah
     World = nil,
 }
 
@@ -6889,20 +6890,27 @@ local function routeDropLive()
         and Guard.Mode == "idle" and not AutoDrop.Busy and not Pabrik.Traveling
 end
 
-local function routeDropOnPlatform(d)
-    if not d or type(d.x) ~= "number" or type(d.y) ~= "number" or not RouteDrop.PlatformId then return false end
-    -- Koordinat drop pada beberapa versi client bisa jatuh di tengah tile atau
-    -- sedikit bergeser akibat fisika. Cek kolom tile terdekat dan pijakan di
-    -- sekitar posisi drop (arah +Y adalah ke bawah pada grid world).
+local function routeDropPlatformRow(d)
+    if not d or type(d.x) ~= "number" or type(d.y) ~= "number" or not RouteDrop.PlatformId then return nil end
+    -- Ambil baris Y pijakan Wooden Platform terdekat di bawah/sekitar drop.
+    -- Koordinat world bertambah ke bawah, sehingga urutan Y menaik = atas ke bawah.
     local xs = { math.floor(d.x), math.floor(d.x + 0.5), math.floor(d.x - 0.5) }
     local baseY = math.floor(d.y + 0.5)
     local ys = { baseY - 1, baseY, baseY + 1, baseY + 2 }
+    local bestY, bestDist
     for _, x in ipairs(xs) do
         for _, y in ipairs(ys) do
-            if fgIdAt(x, y) == RouteDrop.PlatformId then return true end
+            if fgIdAt(x, y) == RouteDrop.PlatformId then
+                local dist = math.abs(y - (d.y + 0.5))
+                if not bestDist or dist < bestDist then bestY, bestDist = y, dist end
+            end
         end
     end
-    return false
+    return bestY
+end
+
+local function routeDropOnPlatform(d)
+    return routeDropPlatformRow(d) ~= nil
 end
 
 local function routeDropAtPoint(d)
@@ -6939,14 +6947,11 @@ local function routeDropTargets()
         end
     end
     RouteDrop.LastScanDiag = diag
-    local st = playerState()
-    local currentY = st and (st.y - 0.475) or 0
-    local leftToRight = RouteDrop.Direction ~= "Kanan → Kiri"
+    -- Urutan tetap: satu baris pijakan penuh dahulu, kanan ke kiri;
+    -- setelah habis baru turun ke baris berikutnya.
     table.sort(out, function(a, b)
-        local da, db = math.abs(a.y - currentY), math.abs(b.y - currentY)
-        if math.abs(da - db) > 0.75 then return da < db end
-        if math.abs(a.y - b.y) > 0.5 then return a.y < b.y end
-        if leftToRight then return a.x < b.x end
+        local ay, by = routeDropPlatformRow(a) or math.huge, routeDropPlatformRow(b) or math.huge
+        if ay ~= by then return ay < by end
         return a.x > b.x
     end)
     return out
@@ -6956,8 +6961,27 @@ local function routeDropDoDrop(resumeX, resumeY)
     if invCount(RouteDrop.TargetId) < 200 then return true end
     local live = routeDropLive
     local dx, dy = RouteDrop.DropX, RouteDrop.DropY
+    RouteDrop.Status = "Kembali ke titik Spawn world sebelum Drop"
+    routeDropLog("Item mencapai 200; menuju titik Spawn world, lalu Drop Point yang ditandai.", true)
+    local world = Refs.World
+    local spawn = world and world.spawn
+    local sx, sy
+    if spawn and (typeof(spawn) == "Vector2" or type(spawn) == "table") then
+        sx, sy = tonumber(spawn.X or spawn.x), tonumber(spawn.Y or spawn.y)
+    end
+    if sx and sy then
+        sx, sy = math.floor(sx), math.floor(sy)
+        if not walkTo(sx, sy, 60, live) then
+            RouteDrop.Status = "Gagal mencapai titik Spawn world"
+            routeDropLog("ERROR: tidak berhasil mencapai koordinat Spawn world; drop dibatalkan agar tidak salah lokasi.", true)
+            return false
+        end
+    else
+        routeDropLog("INFO: koordinat Spawn world tidak tersedia; lanjut langsung ke Drop Point.", true)
+    end
+    if not live() then return false end
     RouteDrop.Status = ("Menuju Drop Point (%d,%d)"):format(dx, dy)
-    routeDropLog("Mulai perjalanan ke Drop Point " .. dx .. "," .. dy, true)
+    routeDropLog("Melanjutkan perjalanan ke Drop Point " .. dx .. "," .. dy, true)
     if not walkTo(dx, dy, 60, live) then
         RouteDrop.Status = "Gagal mencapai Drop Point"
         routeDropLog("ERROR: walkTo gagal mencapai Drop Point. Periksa pijakan/jalur dan koordinat.", true)
@@ -7048,17 +7072,36 @@ local function routeDropStep()
             q.position or 0, q.armed or 0, q.platform or 0, q.ready or 0))
         return
     end
-    -- Ambil target terjauh searah rute, bukan target terdekat satu per satu.
-    -- Dengan begitu karakter melintasi platform dalam satu perjalanan dan drop di
-    -- sepanjang lintasan ikut terambil oleh collision/pickup game.
-    local leftToRight = RouteDrop.Direction ~= "Kanan → Kiri"
-    local target = targets[1]
-    for i = 2, #targets do
-        local candidate = targets[i]
-        if (leftToRight and candidate.x > target.x)
-            or (not leftToRight and candidate.x < target.x) then
-            target = candidate
+    -- Kunci satu baris pijakan: mulai dari baris paling atas, sapu kanan ke kiri,
+    -- lalu pindah ke baris Y berikutnya. Target di baris lain tidak mengubah baris aktif.
+    local rows = {}
+    for _, d in ipairs(targets) do
+        local rowY = routeDropPlatformRow(d)
+        if rowY then rows[rowY] = true end
+    end
+    if not RouteDrop.CurrentRow or not rows[RouteDrop.CurrentRow] then
+        local nextRow
+        for rowY in pairs(rows) do
+            if not RouteDrop.CurrentRow or rowY > RouteDrop.CurrentRow then
+                if not nextRow or rowY < nextRow then nextRow = rowY end
+            end
         end
+        if not nextRow then
+            for rowY in pairs(rows) do
+                if not nextRow or rowY < nextRow then nextRow = rowY end
+            end
+        end
+        RouteDrop.CurrentRow = nextRow
+    end
+    local target
+    for _, d in ipairs(targets) do
+        if routeDropPlatformRow(d) == RouteDrop.CurrentRow then
+            if not target or d.x > target.x then target = d end
+        end
+    end
+    if not target then
+        RouteDrop.CurrentRow = nil
+        return
     end
     local tx, ty = math.floor(target.x), math.floor(target.y - 0.475)
     local s = playerState()
@@ -9187,7 +9230,7 @@ do (function()
     end)
     safe(function()
         setup:Dropdown({
-            Title = "Arah tracking", Desc = "Urutan horizontal saat menyusuri baris platform.",
+            Title = "Arah tracking", Desc = "Mode sweep baris menggunakan urutan tetap: kanan ke kiri, lalu turun ke baris berikutnya.",
             Values = { "Kiri → Kanan", "Kanan → Kiri" }, Value = RouteDrop.Direction,
             Callback = function(v)
                 if type(v) == "table" then v = v[1] end
@@ -9249,7 +9292,8 @@ do (function()
             RouteDrop.World = Refs.World
             RouteDrop.Running = true
             table.clear(RouteDrop.Skip)
-            RouteDrop.Status = "Memulai tracking"
+            RouteDrop.CurrentRow = nil
+            RouteDrop.Status = "Memulai tracking dari baris paling atas (kanan ke kiri)"
             routeDropLog(("START BERHASIL: target=%s [%s], platform=%s [%s], drop=(%d,%d), world=%s, inv=%d"):format(
                 itemName(RouteDrop.TargetId), tostring(RouteDrop.TargetId),
                 itemName(RouteDrop.PlatformId), tostring(RouteDrop.PlatformId),
