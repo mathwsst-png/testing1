@@ -9178,32 +9178,49 @@ do (function()
     end)
     local function startRouteDrop(source)
         routeDropLog("PERMINTAAN START diterima dari " .. tostring(source), true)
-        local reason
-        if not Refs.World or not playerState() then reason = "Masuk world terlebih dahulu"
-        elseif not RouteDrop.TargetId then reason = "Pilih Seed / Block target"
-        elseif not RouteDrop.PlatformId then reason = "Pilih platform pijakan"
-        elseif RouteDrop.DropX < 0 or RouteDrop.DropY < 0 then reason = "Tentukan Drop Point terlebih dahulu"
-        elseif type(rawget(Refs.Hud or {}, "onDrop")) ~= "function" then reason = "Fungsi drop game belum tersedia"
-        elseif State.Running or Clear.Running or Farmer.Running or Pabrik.Running or Build.Running then reason = "Hentikan aktivitas farming lain terlebih dahulu"
-        elseif Guard.Mode ~= "idle" then reason = "Penjaga sedang aktif; tunggu sampai idle" end
-        if reason then
+        local ok, result = pcall(function()
+            -- Catat kondisi satu per satu agar titik penolakan terlihat jelas.
+            routeDropLog(("DIAG START: world=%s player=%s target=%s platform=%s dropX=%s dropY=%s guard=%s state=%s clear=%s farmer=%s pabrik=%s build=%s"):
+                format(tostring(Refs.World ~= nil), tostring(playerState() ~= nil), tostring(RouteDrop.TargetId),
+                    tostring(RouteDrop.PlatformId), tostring(RouteDrop.DropX), tostring(RouteDrop.DropY),
+                    tostring(Guard.Mode), tostring(State.Running), tostring(Clear.Running),
+                    tostring(Farmer.Running), tostring(Pabrik.Running), tostring(Build.Running)), true)
+
+            local reason
+            if not Refs.World or not playerState() then reason = "Masuk world terlebih dahulu"
+            elseif not RouteDrop.TargetId then reason = "Pilih Seed / Block target"
+            elseif not RouteDrop.PlatformId then reason = "Pilih platform pijakan"
+            elseif type(RouteDrop.DropX) ~= "number" or type(RouteDrop.DropY) ~= "number" or RouteDrop.DropX < 0 or RouteDrop.DropY < 0 then reason = "Tentukan Drop Point terlebih dahulu"
+            elseif type(Refs.Hud) ~= "table" or type(rawget(Refs.Hud, "onDrop")) ~= "function" then reason = "Fungsi drop game belum tersedia"
+            elseif State.Running or Clear.Running or Farmer.Running or Pabrik.Running or Build.Running then reason = "Hentikan aktivitas farming lain terlebih dahulu"
+            elseif Guard.Mode ~= "idle" then reason = "Penjaga sedang aktif; tunggu sampai idle" end
+            if reason then
+                RouteDrop.Running = false
+                RouteDrop.Status = "Start ditolak: " .. reason
+                routeDropLog("START DITOLAK: " .. reason, true)
+                notify("Auto Route Drop", reason, 4)
+                if UI.RouteDropToggle then UI.later("routeDropToggleOff", function() UI.RouteDropToggle:Set(false) end) end
+                return false
+            end
+            RouteDrop.World = Refs.World
+            RouteDrop.Running = true
+            table.clear(RouteDrop.Skip)
+            RouteDrop.Status = "Memulai tracking"
+            routeDropLog(("START BERHASIL: target=%s [%s], platform=%s [%s], drop=(%d,%d), world=%s, inv=%d"):format(
+                itemName(RouteDrop.TargetId), tostring(RouteDrop.TargetId),
+                itemName(RouteDrop.PlatformId), tostring(RouteDrop.PlatformId),
+                RouteDrop.DropX, RouteDrop.DropY, tostring(Guard.worldName()), invCount(RouteDrop.TargetId)), true)
+            AutoDrop.On = false
+            return true
+        end)
+        if not ok then
             RouteDrop.Running = false
-            RouteDrop.Status = "Start ditolak: " .. reason
-            routeDropLog("START DITOLAK: " .. reason, true)
-            notify("Auto Route Drop", reason, 4)
-            if UI.RouteDropToggle then UI.later("routeDropToggleOff", function() UI.RouteDropToggle:Set(false) end) end
+            RouteDrop.Status = "Error saat Start: " .. tostring(result)
+            routeDropLog("EXCEPTION startRouteDrop: " .. tostring(result), true)
+            warn("[n4th] EXCEPTION startRouteDrop: " .. tostring(result))
             return false
         end
-        RouteDrop.World = Refs.World
-        RouteDrop.Running = true
-        table.clear(RouteDrop.Skip)
-        RouteDrop.Status = "Memulai tracking"
-        routeDropLog(("START BERHASIL: target=%s [%s], platform=%s [%s], drop=(%d,%d), world=%s, inv=%d"):format(
-            itemName(RouteDrop.TargetId), tostring(RouteDrop.TargetId),
-            itemName(RouteDrop.PlatformId), tostring(RouteDrop.PlatformId),
-            RouteDrop.DropX, RouteDrop.DropY, tostring(Guard.worldName()), invCount(RouteDrop.TargetId)), true)
-        AutoDrop.On = false
-        return true
+        return result
     end
 
     safe(function()
