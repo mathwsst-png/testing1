@@ -6961,24 +6961,11 @@ local function routeDropDoDrop(resumeX, resumeY)
     if invCount(RouteDrop.TargetId) < 200 then return true end
     local live = routeDropLive
     local dx, dy = RouteDrop.DropX, RouteDrop.DropY
-    RouteDrop.Status = "Kembali ke titik Spawn world sebelum Drop"
-    routeDropLog("Item mencapai 200; menuju titik Spawn world, lalu Drop Point yang ditandai.", true)
-    local world = Refs.World
-    local spawn = world and world.spawn
-    local sx, sy
-    if spawn and (typeof(spawn) == "Vector2" or type(spawn) == "table") then
-        sx, sy = tonumber(spawn.X or spawn.x), tonumber(spawn.Y or spawn.y)
-    end
-    if sx and sy then
-        sx, sy = math.floor(sx), math.floor(sy)
-        if not walkTo(sx, sy, 60, live) then
-            RouteDrop.Status = "Gagal mencapai titik Spawn world"
-            routeDropLog("ERROR: tidak berhasil mencapai koordinat Spawn world; drop dibatalkan agar tidak salah lokasi.", true)
-            return false
-        end
-    else
-        routeDropLog("INFO: koordinat Spawn world tidak tersedia; lanjut langsung ke Drop Point.", true)
-    end
+    -- Jangan memaksa kembali ke spawn world. Spawn dapat berada di area yang
+    -- tidak terhubung dengan pijakan aktif, sehingga walkTo akan gagal berulang.
+    -- Gunakan rute A* langsung dari posisi karakter saat ini ke Drop Point pilihan.
+    RouteDrop.Status = ("Langsung menuju Drop Point (%d,%d)"):format(dx, dy)
+    routeDropLog(("Item mencapai 200; melewati Spawn world dan langsung menuju Drop Point (%d,%d)."):format(dx, dy), true)
     if not live() then return false end
     RouteDrop.Status = ("Menuju Drop Point (%d,%d)"):format(dx, dy)
     routeDropLog("Melanjutkan perjalanan ke Drop Point " .. dx .. "," .. dy, true)
@@ -7094,9 +7081,12 @@ local function routeDropStep()
         RouteDrop.CurrentRow = nextRow
     end
     local target
+    local activeRow = RouteDrop.CurrentRow
     for _, d in ipairs(targets) do
-        if routeDropPlatformRow(d) == RouteDrop.CurrentRow then
-            if not target or d.x > target.x then target = d end
+        if routeDropPlatformRow(d) == activeRow then
+            -- Tujuan adalah ujung KIRI baris. Karakter melintasi satu baris penuh
+            -- dari kanan ke kiri; drop di sepanjang lintasan diambil lewat sentuhan.
+            if not target or d.x < target.x then target = d end
         end
     end
     if not target then
@@ -7110,9 +7100,16 @@ local function routeDropStep()
     routeDropLog(("Sweep jalur: %d drop terdeteksi; bergerak langsung ke target terjauh (%.2f, %.2f) -> (%d,%d)"):format(#targets, target.x, target.y, tx, ty), true)
     if walkTo(tx, ty, 35, routeDropLive) then
         RouteDrop.CollectedStops += 1
-        -- Tandai target tujuan sebentar agar scan berikutnya tidak mengunci
-        -- karakter pada drop yang sama. Tidak ada jeda diam setelah perjalanan.
-        RouteDrop.Skip[target.uid or target] = os.clock() + 1.25
+        -- Satu perjalanan = satu sapuan baris. Tandai seluruh drop di baris ini
+        -- sementara agar worker langsung berpindah ke baris berikutnya, bukan
+        -- berhenti dan mengejar drop satu per satu. Baris akan discan ulang
+        -- setelah putaran selesai bila masih ada drop yang belum tersentuh.
+        local rowSkipUntil = os.clock() + 5
+        for _, d in ipairs(targets) do
+            if routeDropPlatformRow(d) == activeRow then
+                RouteDrop.Skip[d.uid or d] = rowSkipUntil
+            end
+        end
         if invCount(RouteDrop.TargetId) >= 200 then
             local now = playerState()
             local rx, ry
