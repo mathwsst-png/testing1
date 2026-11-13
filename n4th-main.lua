@@ -8622,13 +8622,14 @@ local function safe(fn)
     if not ok then warn("[n4th] UI error: " .. tostring(err)) end
 end
 
--- Sidebar dikelompokkan: grup utama bisa dibuka / ditutup (isinya tab-tab)
+-- Sidebar disederhanakan menjadi tiga tab utama.
+-- Semua panel farming lama diarahkan ke FARM, panel keamanan ke PENJAGA,
+-- dan seluruh konfigurasi ke SETELAN. Logika sistem di bawah tetap dipakai.
 local Groups = {}
 for _, g in ipairs({
-    { key = "farm", title = "Farming", icon = "sprout", opened = true },
-    { key = "fitur", title = "Fitur", icon = "sparkles" },
-    { key = "aman", title = "Keamanan", icon = "shield" },
-    { key = "setel", title = "Setelan", icon = "settings" },
+    { key = "farm", title = "FARM", icon = "sprout", opened = true },
+    { key = "aman", title = "PENJAGA", icon = "shield", opened = true },
+    { key = "setel", title = "SETELAN", icon = "settings", opened = true },
 }) do
     local ok, sec = pcall(function()
         return Window:Section({ Title = g.title, Icon = g.icon, Opened = g.opened == true })
@@ -8636,12 +8637,50 @@ for _, g in ipairs({
     if ok and type(sec) == "table" and type(sec.Tab) == "function" then Groups[g.key] = sec end
 end
 
-local function makeTab(title, icon, group)
-    local parent = (group and Groups[group]) or Window
-    local ok, tab = pcall(function() return parent:Tab({ Title = title, Icon = icon }) end)
-    if not ok or not tab then tab = Window:Tab({ Title = title }) end
-    UI.Tabs[title] = tab
-    return tab
+local makeTab
+do
+    local MainTabs = {}
+    -- Tab kosong untuk panel tambahan lama yang tidak termasuk tiga menu pilihan.
+    -- Sistem intinya tetap berjalan; hanya kontrol UI tambahan tersebut yang disembunyikan.
+    local NullTab = {}
+    -- Metode kontrol tambahan yang tidak ditampilkan menjadi no-op agar
+    -- pemanggil lama seperti Refresh/Select tetap aman.
+    NullTab.__index = function(self)
+        return function() return self end
+    end
+    function NullTab:Section() return self end
+    function NullTab:Paragraph() return self end
+    function NullTab:Toggle() return self end
+    function NullTab:Button() return self end
+    function NullTab:Slider() return self end
+    function NullTab:Input() return self end
+    function NullTab:Dropdown() return self end
+    function NullTab:SetDesc() end
+    function NullTab:SetTitle() end
+    setmetatable(NullTab, NullTab)
+
+    makeTab = function(title, icon, group)
+        if group == "fitur" then
+            UI.Tabs[title] = nil
+            return NullTab
+        end
+        local tab = MainTabs[group]
+        if not tab then
+            local parent = (group and Groups[group]) or Window
+            local labels = { farm = "FARM", aman = "PENJAGA", setel = "SETELAN" }
+            local icons = { farm = "sprout", aman = "shield", setel = "settings" }
+            local ok, created = pcall(function()
+                return parent:Tab({ Title = labels[group] or title, Icon = icons[group] or icon })
+            end)
+            if not ok or not created then
+                created = Window:Tab({ Title = labels[group] or title })
+            end
+            tab = created
+            MainTabs[group] = tab
+        end
+        UI.Tabs[title] = tab
+        return tab
+    end
 end
 
 -- Kotak di dalam tab yang bisa dibuka / ditutup (supaya tab tidak terlihat penuh).
