@@ -3698,6 +3698,13 @@ local function hudRange(name, def)
 end
 
 local function punchReach() return hudRange("punchRange", 2.5) end
+-- Auto Break Block dibatasi ke area 5 tile (2 tile kiri/kanan dari karakter).
+-- Clear biasa tetap memakai jangkauan pukul asli dari game.
+local function clearPunchReach()
+    local reach = punchReach()
+    if Clear.TargetId then return math.min(reach, 2.0) end
+    return reach
+end
 local function buildReach() return hudRange("buildRange", 2.5) end
 
 local function playerState()
@@ -5120,7 +5127,7 @@ end
 local function clearInReach(s, bottom, dir)
     local w = Refs.World
     local W = w.w
-    local R = punchReach() - 0.08
+    local R = clearPunchReach() - 0.08
     local cx, cy = s.x, s.y - 0.475
     local footRow = floor(s.y + 0.01)
     local colA, colB = floor(s.x - 0.3), floor(s.x + 0.3 - 0.0001)
@@ -5216,7 +5223,7 @@ end
 
 local function clearBreakList(list, s0)
     local footY = floor(s0.y - 0.475)
-    local R = punchReach() - 0.08
+    local R = clearPunchReach() - 0.08
     local done = 0
     for _, t in ipairs(list) do
         if not Clear.Running or not alive() then break end
@@ -5352,7 +5359,7 @@ local function clearLoop()
                 continue
             end
         end
-        local R = punchReach() - 0.35
+        local R = clearPunchReach() - 0.35
         local useBlock = scaffoldId() ~= nil
         local sx, sy = startNode(s)
         local band = bandTargets(topRow, bottom, dir, reachFilter(sy * w.w + sx, R, useBlock))
