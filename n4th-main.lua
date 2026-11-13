@@ -3698,13 +3698,6 @@ local function hudRange(name, def)
 end
 
 local function punchReach() return hudRange("punchRange", 2.5) end
--- Auto Break Block dibatasi ke area 5 tile (2 tile kiri/kanan dari karakter).
--- Clear biasa tetap memakai jangkauan pukul asli dari game.
-local function clearPunchReach()
-    local reach = punchReach()
-    if Clear.TargetId then return math.min(reach, 2.0) end
-    return reach
-end
 local function buildReach() return hudRange("buildRange", 2.5) end
 
 local function playerState()
@@ -5127,7 +5120,7 @@ end
 local function clearInReach(s, bottom, dir)
     local w = Refs.World
     local W = w.w
-    local R = clearPunchReach() - 0.08
+    local R = punchReach() - 0.08
     local cx, cy = s.x, s.y - 0.475
     local footRow = floor(s.y + 0.01)
     local colA, colB = floor(s.x - 0.3), floor(s.x + 0.3 - 0.0001)
@@ -5223,7 +5216,7 @@ end
 
 local function clearBreakList(list, s0)
     local footY = floor(s0.y - 0.475)
-    local R = clearPunchReach() - 0.08
+    local R = punchReach() - 0.08
     local done = 0
     for _, t in ipairs(list) do
         if not Clear.Running or not alive() then break end
@@ -5343,7 +5336,36 @@ local function clearLoop()
         local bottom = topRow + 1 -- 2 baris dibersihkan dulu sebelum turun
         local dir = bandDir(topRow, s)
 
-        -- 1) Pecahkan yang terjangkau
+        -- 1) Auto Break: dekati bagian tengah grup 5 tile terlebih dahulu.
+        -- Jangkauan pukul tetap memakai punchReach() asli; R kecil di bawah ini
+        -- hanya dipakai sebagai jarak tujuan A* agar karakter tidak berhenti di tepi grup.
+        if Clear.TargetId then
+            local wNow = Refs.World
+            local sx, sy = startNode(s)
+            local bandNow = bandTargets(topRow, bottom, dir, nil)
+            if #bandNow > 0 then
+                local groupNow = {}
+                for _, t in ipairs(bandNow) do
+                    if (t.x - bandNow[1].x) * dir <= 4 then
+                        groupNow[#groupNow + 1] = t
+                    end
+                end
+                if #groupNow > 0 then
+                    local center = groupNow[math.ceil(#groupNow / 2)]
+                    local dx = abs((s.x) - (center.x + 0.5))
+                    local dy = abs((s.y - 0.475) - (center.y + 0.5))
+                    if dx > 0.85 or dy > 0.85 then
+                        local centerGoal = { center }
+                        centerGoal.maxY = center.y + 1
+                        travelGroup(sx, sy, centerGoal, math.min(punchReach() - 0.35, 0.65),
+                            scaffoldId() ~= nil, Clear.Skip, ClearFail)
+                        continue
+                    end
+                end
+            end
+        end
+
+        -- 2) Pecahkan semua tile yang sudah terjangkau dari posisi yang tepat
         local list = clearInReach(s, bottom, dir)
         if #list > 0 then
             if clearBreakList(list, s) > 0 then idle = 0 end
@@ -5359,7 +5381,7 @@ local function clearLoop()
                 continue
             end
         end
-        local R = clearPunchReach() - 0.35
+        local R = punchReach() - 0.35
         local useBlock = scaffoldId() ~= nil
         local sx, sy = startNode(s)
         local band = bandTargets(topRow, bottom, dir, reachFilter(sy * w.w + sx, R, useBlock))
