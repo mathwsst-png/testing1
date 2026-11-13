@@ -7050,58 +7050,89 @@ local function routeDropStep()
         routeDropDoDrop(x, y)
         return
     end
-    local targets = routeDropTargets()
-    if #targets == 0 then
-        RouteDrop.Status = "Menunggu " .. itemName(RouteDrop.TargetId) .. " di atas platform " .. itemName(RouteDrop.PlatformId)
-        local q = RouteDrop.LastScanDiag or {}
-        routeDropLog(("Scan kosong: target=%d platform=%d totalDrop=%d itemCocok=%d posisiValid=%d armed=%d diPlatform=%d siap=%d"):format(
-            RouteDrop.TargetId, RouteDrop.PlatformId, q.total or 0, q.item or 0,
-            q.position or 0, q.armed or 0, q.platform or 0, q.ready or 0))
-        return
-    end
-    -- Jangan mengunci satu baris: platform bisa terpisah atau tidak tersambung.
-    -- Pilih target yang paling dekat dari posisi karakter, lalu uji A* satu per satu.
-    local sx, sy = startNode(state)
-    table.sort(targets, function(a, b)
-        local ax, ay = math.floor(a.x), math.floor(a.y - 0.475)
-        local bx, by = math.floor(b.x), math.floor(b.y - 0.475)
-        local da = math.abs(ax - sx) + math.abs(ay - sy)
-        local db = math.abs(bx - sx) + math.abs(by - sy)
-        return da < db
-    end)
+    -- Mode agresif: terus pilih target terdekat dan lanjut ke target berikutnya
+    -- dalam satu siklus, bukan berhenti setelah satu drop.
+    local startedAt = os.clock()
+    local collectedThisPass, failedThisPass = 0, 0
+    local maxCollectPerPass = 12
+    local maxPassSeconds = 12
 
-    local tried, moved = 0, false
-    for _, target in ipairs(targets) do
-        if tried >= 6 or not routeDropLive() then break end
-        local tx, ty = math.floor(target.x), math.floor(target.y - 0.475)
-        RouteDrop.Status = ("Mencari jalur ke drop %s (%d,%d)"):format(itemName(RouteDrop.TargetId), tx, ty)
-        routeDropLog(("Coba rute: %d kandidat; target terdekat (%.2f, %.2f) -> (%d,%d)"):format(
-            #targets, target.x, target.y, tx, ty), true)
-        tried += 1
-        if walkTo(tx, ty, 5, routeDropLive) then
-            moved = true
-            RouteDrop.CollectedStops += 1
-            -- Tandai hanya drop tujuan sebentar. Drop lain tetap dipindai agar
-            -- worker bisa menyapu bertahap tanpa menganggap satu baris sudah bersih.
-            RouteDrop.Skip[target.uid or target] = os.clock() + 1.5
-            if invCount(RouteDrop.TargetId) >= 200 then
-                local now = playerState()
-                local rx, ry
-                if now then rx, ry = startNode(now) end
-                routeDropDoDrop(rx, ry)
+    while routeDropLive()
+        and collectedThisPass < maxCollectPerPass
+        and os.clock() - startedAt < maxPassSeconds do
+
+        local targets = routeDropTargets()
+        if #targets == 0 then
+            if collectedThisPass == 0 then
+                RouteDrop.Status = "Menunggu drop target di platform"
             else
-                RouteDrop.Status = "Melanjutkan sweep dari posisi terbaru"
+                RouteDrop.Status = ("Sweep berlanjut: %d drop dikunjungi"):format(collectedThisPass)
             end
             break
-        else
-            RouteDrop.Skip[target.uid or target] = os.clock() + 8
-            routeDropLog(("Rute gagal (%d,%d); lewati sementara dan coba kandidat berikutnya."):format(tx, ty), true)
         end
+
+        local sx, sy = startNode(playerState() or state)
+        table.sort(targets, function(a, b)
+            local ax, ay = math.floor(a.x), math.floor(a.y - 0.475)
+            local bx, by = math.floor(b.x), math.floor(b.y - 0.475)
+            local da = math.abs(ax - sx) + math.abs(ay - sy)
+            local db = math.abs(bx - sx) + math.abs(by - sy)
+            return da < db
+        end)
+
+        local moved = false
+        local tried = 0
+        for _, target in ipairs(targets) do
+            if tried >= 6 or not routeDropLive()
+                or collectedThisPass >= maxCollectPerPass
+                or os.clock() - startedAt >= maxPassSeconds then
+                break
+            end
+
+            local tx, ty = math.floor(target.x), math.floor(target.y - 0.475)
+            tried += 1
+            RouteDrop.Status = ("Agresif sweep %d/%d: menuju (%d,%d)"):format(
+                collectedThisPass + 1, maxCollectPerPass, tx, ty)
+            routeDropLog(("Agresif: coba target (%d,%d), kandidat=%d"):format(
+                tx, ty, #targets), false)
+
+            if walkTo(tx, ty, 3, routeDropLive) then
+                moved = true
+                collectedThisPass += 1
+                RouteDrop.CollectedStops += 1
+                RouteDrop.Skip[target.uid or target] = os.clock() + 1.5
+
+                if invCount(RouteDrop.TargetId) >= 200 then
+                    local now = playerState()
+                    local rx, ry
+                    if now then rx, ry = startNode(now) end
+                    routeDropDoDrop(rx, ry)
+                    if not routeDropLive() then return end
+                end
+
+                -- Keluar dari daftar lama, scan ulang posisi/drop terbaru langsung.
+                break
+            else
+                failedThisPass += 1
+                RouteDrop.Skip[target.uid or target] = os.clock() + 8
+                routeDropLog(("Jalur ke (%d,%d) gagal; lanjut kandidat berikutnya."):format(
+                    tx, ty), false)
+            end
+        end
+
+        if not moved then
+            -- Tidak ada jalur untuk kandidat yang tersisa; hindari loop rapat.
+            RouteDrop.Status = "Mencari jalur lain yang bisa dijangkau"
+            break
+        end
+        task.wait(0.03)
     end
-    if not moved and tried == 0 then
-        RouteDrop.Status = "Tidak ada target yang bisa dicoba saat ini"
-    elseif not moved then
-        RouteDrop.Status = "Mencari target lain yang terjangkau"
+
+    if collectedThisPass > 0 then
+        RouteDrop.Status = ("Sweep agresif: %d target dikunjungi; lanjut otomatis"):format(
+            collectedThisPass)
+        routeDropLog(("Sweep agresif selesai satu siklus: %d target dikunjungi, %d rute gagal."):format(
+            collectedThisPass, failedThisPass), true)
     end
 end
 
