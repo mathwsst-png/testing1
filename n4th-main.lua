@@ -9072,17 +9072,39 @@ do (function()
     local function itemOptions(platformOnly)
         local ids = {}
         if platformOnly then
+            -- Platform adalah tile pijakan, jadi daftar platform tetap berasal dari ItemDB.
             for id, it in pairs(ItemDB) do
                 if type(id) == "number" and type(it) == "table" and it.platform == true then
                     ids[#ids + 1] = id
                 end
             end
         else
-            ids = placeableIds()
+            -- Target harus berasal dari objek DROP yang benar-benar ada di world.
+            -- Jangan mengambil daftar dari tile foreground/background yang sedang terpasang.
+            -- Item seed dan item placeable (termasuk background/wallpaper) boleh dipilih,
+            -- tetapi hanya jika ada entitas drop aktif dengan jumlah dan koordinat valid.
+            if not Drops.list then findDropRefs() end
+            local seen = {}
+            for _, d in pairs(Drops.list or {}) do
+                if type(d) == "table"
+                    and type(d.id) == "number"
+                    and (d.n or 0) > 0
+                    and type(d.x) == "number"
+                    and type(d.y) == "number" then
+                    local it = ItemDB[d.id]
+                    if it and (it.kind == "seed" or isPlaceable(d.id)) then
+                        seen[d.id] = true
+                    end
+                end
+            end
+            for id in pairs(seen) do ids[#ids + 1] = id end
         end
         table.sort(ids)
         local labels = {}
         for _, id in ipairs(ids) do labels[#labels + 1] = ("%s [%d]"):format(itemName(id), id) end
+        if #labels == 0 and not platformOnly then
+            labels = { "(belum ada seed/block/bg yang sedang ter-drop; refresh setelah harvest)" }
+        end
         return labels
     end
     local function idFromLabel(value, platformOnly)
@@ -9111,8 +9133,8 @@ do (function()
 
     safe(function()
         UI.RouteDropTarget = setup:Dropdown({
-            Title = "Seed / Block yang dikumpulkan",
-            Desc = "Pilih satu jenis item yang akan dilacak dan dikumpulkan.",
+            Title = "Seed / Block / BG yang sedang ter-drop",
+            Desc = "Hanya menampilkan item yang benar-benar sedang ter-drop di world (hasil harvest/drop), bukan tile yang sedang terpasang. Refresh setelah hasil harvest muncul.",
             Values = itemOptions(false),
             Callback = function(v)
                 local id = idFromLabel(v, false)
@@ -9144,8 +9166,9 @@ do (function()
         })
     end)
     safe(function()
-        setup:Button({ Title = "Refresh daftar item & platform", Callback = function()
+        setup:Button({ Title = "Refresh daftar DROP & platform", Desc = "Scan ulang item yang benar-benar ter-drop di world setelah harvest.", Callback = function()
             UI.later("routeDropRefresh", function()
+                findDropRefs()
                 if UI.RouteDropTarget then pcall(function() UI.RouteDropTarget:Refresh(itemOptions(false)) end) end
                 if UI.RouteDropPlatform then pcall(function() UI.RouteDropPlatform:Refresh(itemOptions(true)) end) end
             end)
