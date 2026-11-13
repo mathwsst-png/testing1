@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-11-lite-perf-8-no-autodrop-pabrik-tas"
+Session.Build = "2026-11-11-lite-perf-7-strict-itemdb"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -738,6 +738,7 @@ local Build = {
     BlockId = nil,
     UseBlock = true,     -- boleh taruh block pijakan kalau baris pertama tidak terjangkau
     Produce = true,      -- block kurang -> produksi dulu (tanam & panen) sampai cukup
+    ThenPabrik = false,  -- selesai -> langsung jalankan Pabrik
     Placed = 0,
     Phase = "-",
     Status = "-",
@@ -1531,7 +1532,7 @@ I18N.PH = {
     { "Bersihkan tile lahan", "Clearing land tile" }, { "Ambil drop", "Picking up drop" },
     { "1 kosong per baris, tangga kiri & kanan", "1 gap per row, stairs on left & right" },
     { "titik drop belum diatur", "drop point not set" }, { "otomatis saat", "automatic at" },
-    { "Dipakai: Farmer & Auto Farm (otomatis saat item ~190)",
+    { "Dipakai: Pabrik (seed), Farmer & Auto Farm (otomatis saat item ~190)",
         "Used by: Factory (seeds), Farmer & Auto Farm (automatic when an item reaches ~190)" },
     { "saat", "at" },
     { "Mati", "Off" }, { "mati", "off" }, { "pohon siap", "trees ready" }, { "pohon", "trees" },
@@ -1830,7 +1831,11 @@ Farmer.HarvestMs = math.max(Farmer.HarvestMs, 140)
 Farmer.PlantMs = math.max(Farmer.PlantMs, 140)
 Config.add("Misc", Misc, { "Speed" })
 Config.add("Lahan", Land, { "X0", "X1", "Y0" })
-Config.add("Bangun", Build, { "BlockId", "BreakX", "BreakY", "Tiles" })
+Config.add("Bangun", Build, { "BlockId", "ThenPabrik", "BreakX", "BreakY", "Tiles" })
+Config.add("Pabrik", Pabrik, {
+    "SeedId", "WholeWorld", "Tiles", "BreakX", "BreakY",
+    "Drop", "Keep", "DropAt", "DropWorld", "DropX", "DropY",
+})
 Config.add("Bahasa", I18N, { "Saved", "Ask", "Chosen" })
 do
     local teleport = game:GetService("TeleportService")
@@ -7037,10 +7042,6 @@ function Pabrik.stop(reason)
 end
 
 function Pabrik.start()
-    Pabrik.Running = false
-    Pabrik.Status = "Fitur Pabrik dinonaktifkan"
-    return false
-    -- Legacy implementation retained below but intentionally unreachable.
     if Pabrik.Running then return end
     if AutoDrop.Busy then notify("Auto Drop", "Tunggu perjalanan drop selesai", 3) return end
     local err
@@ -7900,6 +7901,10 @@ local function buildLoop(runId)
                 if not live() then break end
                 local note = (#carve > 0) and (", " .. #carve .. " tile gali dilewati") or ""
                 Build.stop("Lahan selesai (" .. info.done .. " block" .. note .. ")")
+                if Build.ThenPabrik then
+                    if not Pabrik.SeedId then Pabrik.SeedId = seed end
+                    Pabrik.start()
+                end
                 break
             end
             local reserve = (have >= info.need or not seed) and 0 or Build.RESERVE
@@ -8334,9 +8339,10 @@ local COLOR_ON = Color3.fromRGB(46, 160, 90)
 local COLOR_ME = Color3.fromRGB(60, 110, 220)
 local CellButtons = {}
 
--- Grid berbagi mode Farm dan Lahan.
+-- Grid berbagi mode Farm, Pabrik, dan Lahan.
 UI.GridMode = "farm"
 UI.gridTarget = function()
+    if UI.GridMode == "pabrik" then return Pabrik.Tiles end
     if UI.GridMode == "lahan" then return Build.Tiles end
     return State.Offsets
 end
@@ -8395,6 +8401,8 @@ UI.GridStart = GridStart
 GridStart.MouseButton1Click:Connect(function()
     if UI.GridMode == "lahan" then
         if Build.Running then Build.stop() elseif Build.start then Build.start() end
+    elseif UI.GridMode == "pabrik" then
+        if Pabrik.Running then Pabrik.stop() else Pabrik.start() end
     elseif State.Running and not State.Override then
         stopFarm()
     else
@@ -8420,7 +8428,7 @@ ClearBtn.MouseButton1Click:Connect(function()
     updateStatus()
 end)
 
--- Tombol ganti mode Grid: Farm (tile Auto Farm) / Lahan
+-- Tombol ganti mode Grid: Farm (tile Auto Farm) / Pabrik (tile break pabrik)
 do (function()
     local ModeBtn = Instance.new("TextButton")
     ModeBtn.Size = UDim2.fromOffset(62, 22)
@@ -8433,14 +8441,19 @@ do (function()
     Title.Size = UDim2.new(1, -106, 0, 28)
 
     local function apply()
+        local pab = UI.GridMode == "pabrik"
         local lah = UI.GridMode == "lahan"
-        ModeBtn.Text = lah and I18N.T("Lahan") or "Farm"
-        ModeBtn.BackgroundColor3 = lah and Color3.fromRGB(60, 140, 200) or Color3.fromRGB(60, 60, 75)
-        Title.Text = I18N.T(lah and "Tile Break Lahan" or "Grid Tile")
+        ModeBtn.Text = lah and I18N.T("Lahan") or (pab and I18N.T("Pabrik") or "Farm")
+        ModeBtn.BackgroundColor3 = lah and Color3.fromRGB(60, 140, 200)
+            or (pab and Color3.fromRGB(200, 120, 40) or Color3.fromRGB(60, 60, 75))
+        Title.Text = I18N.T(lah and "Tile Break Lahan" or (pab and "Tile Break Pabrik" or "Grid Tile"))
         for key in pairs(CellButtons) do paintCell(key) end
         if lah then
             GridStart.Text = I18N.T(Build.Running and "STOP LAHAN" or "START LAHAN")
             GridStart.BackgroundColor3 = Build.Running and Color3.fromRGB(200, 60, 60) or COLOR_ON
+        elseif pab then
+            GridStart.Text = I18N.T(Pabrik.Running and "STOP PABRIK" or "START PABRIK")
+            GridStart.BackgroundColor3 = Pabrik.Running and Color3.fromRGB(200, 60, 60) or COLOR_ON
         else
             local run = State.Running and not State.Override
             GridStart.Text = run and "STOP" or "START"
@@ -8454,8 +8467,8 @@ do (function()
         return true
     end
     UI.applyGrid = apply
-    ModeBtn.MouseButton1Click:Connect(function() -- Farm <-> Lahan
-        local nxt = { farm = "lahan", lahan = "farm" }
+    ModeBtn.MouseButton1Click:Connect(function() -- Farm -> Pabrik -> Lahan -> Farm
+        local nxt = { farm = "pabrik", pabrik = "lahan", lahan = "farm" }
         UI.setGridMode(nxt[UI.GridMode] or "farm")
     end)
     apply()
@@ -8853,7 +8866,128 @@ do (function()
     end)
 end)() end
 
--- [TAB AUTO DROP DIHAPUS sesuai permintaan pengguna]
+-- ===== TAB: AUTO DROP =====
+do (function()
+    local tab = makeTab("Auto Drop", "package-open", "farm")
+    safe(function() UI.AutoDropStatus = tab:Paragraph({ Title = "Status", Desc = "-" }) end)
+    local controls = box(tab, "Kontrol", true)
+    local focusBox = box(tab, "Fokus panen", true)
+
+    safe(function()
+        UI.AutoDropToggle = controls:Toggle({
+            Title = "Auto Drop instan",
+            Desc = "Seed fokus atau block-nya mencapai 200 langsung di-drop di posisi karakter sekarang, tanpa jalan ke mana-mana.",
+            Value = false,
+            Callback = function(on)
+                if on then
+                    local reason = AutoDrop.startError()
+                    if reason then
+                        AutoDrop.On = false
+                        notify("Auto Drop", reason, 4)
+                        UI.later("autoDropOff", function() UI.AutoDropToggle:Set(false) end)
+                        return
+                    end
+                end
+                AutoDrop.On = on
+                AutoDrop.NextTry = 0
+                AutoDrop.Status = on and "Menunggu seed / block fokus mencapai 200" or "Mati"
+            end,
+        })
+    end)
+
+    safe(function()
+        UI.TractorToggle = controls:Toggle({
+            Title = "Mode Tractor",
+            Desc = "Farmer hanya berjalan menyusuri pohon siap panen (seed fokus), tanpa memukul dan tanpa menanam. Tractor yang memanen saat melewatinya. Jalankan lewat tombol Farmer.",
+            Value = Farmer.Tractor,
+            Callback = function(on)
+                Farmer.Tractor = on and true or false
+                table.clear(Farmer.Skip)
+                pcall(Auto.updateFarmerStatus)
+                if Session.Ready then Config.save(true) end
+            end,
+        })
+    end)
+
+    safe(function()
+        controls:Button({
+            Title = "Jalankan / hentikan Farmer",
+            Desc = "Sama dengan toggle di tab Farmer.",
+            Callback = function()
+                if Farmer.Running then stopFarmer() else Auto.startFarmer() end
+            end,
+        })
+    end)
+
+    -- Fokus panen: seed yang punya pohon siap panen. Yang dipilih dipanen Farmer dan dipantau untuk drop.
+    safe(function()
+        local labels, selected = AutoDrop.focusLabels(true)
+        UI.AutoDropFocus = focusBox:Dropdown({
+            Title = "Seed fokus",
+            Desc = "Seed yang ada di pohon siap panen. Yang dipilih jadi satu-satunya yang dipanen Farmer, dan seed + block-nya yang di-drop.",
+            Values = labels,
+            Value = selected,
+            Callback = function(option)
+                if UI.AutoDropRefreshing then return end
+                if type(option) == "table" then option = option[1] end
+                local id = AutoDrop.focusFromLabel(option)
+                if id == Farmer.Focus then return end
+                Farmer.Focus = id
+                table.clear(Farmer.Skip)
+                pcall(Auto.updateFarmerStatus)
+                if Session.Ready then Config.save(true) end
+                UI.later("autoDropFocus", function() UI.AutoDropRefresh(true) end)
+            end,
+        })
+    end)
+
+    local lastSig
+    UI.AutoDropRefresh = function(force)
+        if not UI.AutoDropFocus then return end
+        if not force and not UI.tabVisible("Auto Drop") then return end
+        local labels, selected = AutoDrop.focusLabels(force)
+        local signature = table.concat(labels, "|") .. "/" .. selected
+        if not force and signature == lastSig then return end
+        local ok = UI.exec(function()
+            UI.AutoDropRefreshing = true
+            local refreshed, refreshError = pcall(function()
+                UI.AutoDropFocus:Refresh(labels)
+                UI.AutoDropFocus:Select(selected)
+            end)
+            UI.AutoDropRefreshing = false
+            if not refreshed then error(refreshError, 0) end
+        end)
+        if ok then lastSig = signature end
+    end
+    safe(function()
+        focusBox:Button({
+            Title = "Refresh daftar seed siap panen",
+            Callback = function() UI.later("autoDropFocus", function() UI.AutoDropRefresh(true) end) end,
+        })
+    end)
+
+    task.spawn(function()
+        while alive() do
+            local counts = {}
+            for _, t in ipairs(AutoDrop.targets()) do
+                counts[#counts + 1] = ("%s %s %d/200"):format(t.kind, itemName(t.id), invCount(t.id))
+            end
+            local text = table.concat({
+                I18N.T(AutoDrop.Status),
+                "Fokus: " .. (Farmer.Focus and itemName(Farmer.Focus) or "belum dipilih (semua seed)"),
+                "Mode: " .. (Farmer.Tractor and "Tractor (jalan saja)" or "Normal (pukul & tanam)"),
+                #counts > 0 and table.concat(counts, " | ") or "-",
+                ("Dropped: %d"):format(AutoDrop.Dropped),
+            }, "\n")
+            if UI.AutoDropStatus and text ~= AutoDrop.Shown then
+                AutoDrop.Shown = text
+                UI.later("autoDropStatus", function() UI.AutoDropStatus:SetDesc(text) end)
+            end
+            if UI.AutoDropRefresh then pcall(UI.AutoDropRefresh, false) end
+            task.wait(0.5)
+        end
+    end)
+end)() end
 
 -- ===== TAB: CLEAR WORLD =====
 local ClearTab = makeTab("Clear World", "eraser", "farm")
@@ -8979,20 +9113,6 @@ safe(function()
     Box.FarmerSeed:Button({
         Title = "Refresh daftar seed",
         Callback = function() UI.later("invForce", function() doInvRefresh(true) end) end,
-    })
-end)
-
-safe(function()
-    Box.FarmerCtl:Toggle({
-        Title = "Mode Tractor",
-        Desc = "Farmer hanya berjalan menyusuri pohon siap panen, tanpa memukul dan tanpa menanam.",
-        Value = Farmer.Tractor,
-        Callback = function(on)
-            Farmer.Tractor = on and true or false
-            table.clear(Farmer.Skip)
-            pcall(Auto.updateFarmerStatus)
-            if Session.Ready then Config.save(true) end
-        end,
     })
 end)
 
@@ -9298,7 +9418,7 @@ do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
         return {
             farm = State.Running and not State.Override, clear = Clear.Running, farmer = Farmer.Running,
             clearTarget = Clear.TargetId,
-            build = Build.Running,
+            pabrik = Pabrik.Running, build = Build.Running,
             world = worldName(), tx = tx, ty = ty,
         }
     end
@@ -9379,6 +9499,8 @@ do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
         end
         if saved.build then
             if active() then Build.start() end
+        elseif saved.pabrik then
+            if active() then Pabrik.start() end
         elseif saved.farm then
             -- Auto Farm memakai tile di sekitar karakter, jadi harus balik ke posisi awal
             local hx, hy = Auto.here()
@@ -10183,8 +10305,229 @@ do (function()
     end)
 end)() end
 
--- [FITUR TAS DIHAPUS sesuai permintaan pengguna]
+---------------------------------------------------------------------
+-- TAS: auto recycle item sampah & auto convert lock
+---------------------------------------------------------------------
+-- Cara kerja (sama seperti tombol di inventori game):
+--   Recycle : hapus dari inventori lalu World.call("Recycle", id, jumlah)
+--   Convert : 100 World Lock -> 1 Diamond Lock, 100 Diamond Lock -> 1 Blue Gem Lock
+--             lewat World.call("ConvertLock", dari, ke)
+-- Tool & lock tidak bisa dipilih untuk recycle (supaya tidak terbuang tidak sengaja).
+local Bag = {
+    TrashOn = false,
+    TrashList = {},    -- daftar id item yang di-recycle
+    TrashAt = 150,     -- recycle kalau jumlahnya sudah segini
+    Keep = 0,          -- sisakan sebanyak ini
+    LockOn = false,
+    Recycled = 0,
+    Converted = 0,
+    Status = "-",
+}
 
+do (function()
+    local LOCK_IDS = { [242] = true, [1796] = true, [7188] = true }
+    local LOCK_STEPS = {
+        { from = 242, to = 1796, name = "Diamond Lock" },
+        { from = 1796, to = 7188, name = "Blue Gem Lock" },
+    }
+
+    local function worldCall(...)
+        local w = Refs.World
+        local f = w and rawget(w, "call")
+        if type(f) ~= "function" then return false end
+        return pcall(f, ...)
+    end
+
+    local function trashable(id)
+        local it = ItemDB[id]
+        return it ~= nil and it.kind ~= "tool" and not LOCK_IDS[id]
+    end
+
+    function Bag.recycle(id, n)
+        if not Refs.Inv or n <= 0 or not trashable(id) then return false end
+        n = math.min(n, invCount(id))
+        if n <= 0 then return false end
+        pcall(function() Refs.Inv:remove(id, n) end)
+        local ok = worldCall("Recycle", id, n)
+        if ok then
+            Bag.Recycled += n
+            Bag.Status = ("Recycle %s x%d"):format(itemName(id), n)
+        end
+        return ok
+    end
+
+    -- sama seperti cek tombol convert di game (muat atau tidak)
+    local function convertLock(step)
+        local inv = Refs.Inv
+        if not inv or invCount(step.from) < 100 then return false end
+        local okU, used = pcall(function() return inv:used() end)
+        local okC, cap = pcall(function() return inv.capacity end)
+        if invCount(step.to) + 1 > 200 then return false end
+        if invCount(step.to) == 0 and invCount(step.from) ~= 100 and okU and okC
+            and type(used) == "number" and type(cap) == "number" and used >= cap then
+            return false
+        end
+        pcall(function()
+            inv:remove(step.from, 100)
+            inv:add(step.to, 1)
+        end)
+        local ok = worldCall("ConvertLock", step.from, step.to)
+        if ok then
+            Bag.Converted += 1
+            Bag.Status = "Convert ke " .. step.name
+        end
+        return ok
+    end
+
+    function Bag.tick()
+        if AutoDrop.Busy then return end
+        if Bag.TrashOn then
+            for _, id in ipairs(Bag.TrashList) do
+                local n = invCount(id)
+                if n >= Bag.TrashAt and n > Bag.Keep then
+                    Bag.recycle(id, n - Bag.Keep)
+                    task.wait(0.5)
+                end
+            end
+        end
+        if Bag.LockOn then
+            for _, step in ipairs(LOCK_STEPS) do
+                if convertLock(step) then task.wait(0.5) end
+            end
+        end
+    end
+
+    -- label dropdown: item di inventori yang boleh di-recycle
+    function Bag.labels()
+        local out, seen = {}, {}
+        if Refs.Inv then
+            for _, slot in ipairs(Refs.Inv.slots) do
+                local id = slot.id
+                if id and not seen[id] and (slot.n or 0) > 0 and trashable(id) then
+                    seen[id] = true
+                    out[#out + 1] = { id = id, label = ("%s [%d]"):format(itemName(id), id) }
+                end
+            end
+        end
+        -- item yang sudah dipilih tetap tampil walau sedang habis
+        for _, id in ipairs(Bag.TrashList) do
+            if not seen[id] then
+                seen[id] = true
+                out[#out + 1] = { id = id, label = ("%s [%d]"):format(itemName(id), id) }
+            end
+        end
+        table.sort(out, function(a, b) return a.id < b.id end)
+        local labels, picked = {}, {}
+        for _, e in ipairs(out) do
+            labels[#labels + 1] = e.label
+            if table.find(Bag.TrashList, e.id) then picked[#picked + 1] = e.label end
+        end
+        return labels, picked
+    end
+
+    task.spawn(function()
+        while alive() do
+            pcall(Bag.tick)
+            if UI.BagStatus then
+                local txt = ("Status: %s\nDi-recycle: %d item | Convert lock: %d kali\nItem dipilih: %d"):format(
+                    Bag.Status, Bag.Recycled, Bag.Converted, #Bag.TrashList)
+                if txt ~= Bag.Shown then
+                    Bag.Shown = txt
+                    pcall(function() UI.BagStatus:SetDesc(txt) end)
+                end
+            end
+            task.wait(3)
+        end
+    end)
+end)() end
+
+Config.add("Tas", Bag, { "TrashOn", "TrashList", "TrashAt", "Keep", "LockOn" })
+
+-- ===== TAB: TAS =====
+do (function()
+    local BagTab = makeTab("Tas", "backpack", "fitur")
+
+    safe(function()
+        UI.BagStatus = BagTab:Paragraph({ Title = "Status", Desc = "-" })
+    end)
+
+    local bTrash = box(BagTab, "Auto Recycle (buang item)", true)
+    local bLock = box(BagTab, "Auto Convert Lock", false)
+
+    safe(function()
+        bTrash:Toggle({
+            Title = "Auto Recycle",
+            Desc = "Item yang dipilih di-recycle otomatis",
+            Value = Bag.TrashOn,
+            Callback = function(on) Bag.TrashOn = on end,
+        })
+    end)
+
+    safe(function()
+        local labels, picked = Bag.labels()
+        UI.TrashDropdown = bTrash:Dropdown({
+            Title = "Item yang di-recycle",
+            Desc = "Bisa pilih banyak. Tool & lock tidak ditampilkan",
+            Values = (#labels > 0) and labels or { "(inventori belum terbaca)" },
+            Value = picked,
+            Multi = true,
+            AllowNone = true,
+            Callback = function(opts)
+                local list = {}
+                for _, label in ipairs(type(opts) == "table" and opts or { opts }) do
+                    local id = tonumber(string.match(tostring(label), "%[(%d+)%]$"))
+                    if id then list[#list + 1] = id end
+                end
+                Bag.TrashList = list
+            end,
+        })
+    end)
+
+    -- dipanggil saat inventori berubah
+    local lastSig = nil
+    UI.TrashRefresh = function(force)
+        if not force and not UI.tabVisible("Tas") then return end
+        local labels, picked = Bag.labels()
+        local sig = table.concat(labels, "|")
+        if not force and sig == lastSig then return end
+        lastSig = sig
+        if not UI.TrashDropdown then return end
+        UI.exec(function() UI.TrashDropdown:Refresh((#labels > 0) and labels or { "(inventori kosong)" }) end)
+        if #picked > 0 then UI.exec(function() UI.TrashDropdown:Select(picked) end) end
+    end
+
+    addNumber(bTrash, {
+        Title = "Recycle kalau jumlah >=",
+        Desc = "200 = hanya saat penuh 1 slot",
+        Min = 1, Max = 200, Step = 1, Default = Bag.TrashAt,
+        Callback = function(v) Bag.TrashAt = math.floor(v) end,
+    })
+
+    addNumber(bTrash, {
+        Title = "Sisakan",
+        Desc = "Jumlah yang tidak ikut di-recycle",
+        Min = 0, Max = 199, Step = 1, Default = Bag.Keep,
+        Callback = function(v) Bag.Keep = math.floor(v) end,
+    })
+
+    safe(function()
+        bTrash:Button({
+            Title = "Refresh daftar item",
+            Callback = function() UI.later("trash", function() UI.TrashRefresh(true) end) end,
+        })
+    end)
+
+    safe(function()
+        bLock:Toggle({
+            Title = "Auto Convert Lock",
+            Desc = "100 WL -> 1 DL, 100 DL -> 1 BGL (sama seperti game)",
+            Value = Bag.LockOn,
+            Callback = function(on) Bag.LockOn = on end,
+        })
+    end)
+end)() end
+
+---------------------------------------------------------------------
 -- ===== TAB: LAHAN (bangun farm world) =====
 do (function()
     local LTab = makeTab("Lahan", "layout-grid", "farm")
@@ -10272,6 +10615,14 @@ do (function()
     end)
 
     safe(function()
+        lCtl:Toggle({
+            Title = "Lanjut Pabrik setelah selesai",
+            Value = Build.ThenPabrik,
+            Callback = function(on) Build.ThenPabrik = on end,
+        })
+    end)
+
+    safe(function()
         lCtl:Button({
             Title = "Posisi break produksi = posisi karakter",
             Desc = "Berdiri di tempat break lalu tekan. Tekan lagi di tempat yang sama = kembali otomatis",
@@ -10355,7 +10706,135 @@ do (function()
     end)
 end)() end
 
--- [TAB PABRIK DIHAPUS sesuai permintaan pengguna]
+-- ===== TAB: PABRIK =====
+do (function()
+    local PTab = makeTab("Pabrik", "factory", "farm")
+
+    safe(function()
+        UI.PabrikStatus = PTab:Paragraph({ Title = "Status Pabrik", Desc = "-" })
+    end)
+
+    local pCtl = box(PTab, "Kontrol", true)
+    local pBreak = box(PTab, "Posisi & tile break", true)
+    local pDrop = box(PTab, "Drop seed", true)
+
+    safe(function()
+        UI.PabrikToggle = pCtl:Toggle({
+            Title = "Jalankan Pabrik",
+            Desc = "Break -> tanam -> panen -> break lagi, seed lebihan di-drop",
+            Value = false,
+            Callback = function(on)
+                if on then Pabrik.start() elseif Pabrik.Running then Pabrik.stop() end
+            end,
+        })
+    end)
+
+    safe(function()
+        UI.PabrikSeedDropdown = pCtl:Dropdown({
+            Title = "Seed pabrik",
+            Desc = "Block-nya otomatis (contoh: Dirt Seed -> Dirt)",
+            Values = { "(memuat...)" },
+            Callback = function(opt)
+                local id = tonumber(string.match(opt or "", "%[(%d+)%]$"))
+                if id then Pabrik.SeedId = id end
+            end,
+        })
+    end)
+
+    safe(function()
+        pCtl:Toggle({
+            Title = "Tanam di seluruh world",
+            Desc = "Mati = hanya di lahan (tab Lahan)",
+            Value = Pabrik.WholeWorld,
+            Callback = function(on) Pabrik.WholeWorld = on end,
+        })
+    end)
+
+    safe(function()
+        pBreak:Button({
+            Title = "Pakai posisi sekarang untuk break",
+            Desc = "Berdiri di tempat break, lalu tekan",
+            Callback = function()
+                local x, y = Auto.here()
+                if not x then
+                    notify("Pabrik", "Kamu belum masuk world", 3)
+                    return
+                end
+                Pabrik.BreakX, Pabrik.BreakY = x, y
+                notify("Pabrik", ("Posisi break (%d,%d)"):format(x, y), 3)
+            end,
+        })
+    end)
+
+    safe(function()
+        pBreak:Button({
+            Title = "Pilih tile break (Grid)",
+            Desc = "Grid terbuka dalam mode Pabrik (terpisah dari tile Auto Farm)",
+            Callback = function()
+                if UI.setGridMode then UI.setGridMode("pabrik") end
+                if UI.GridGui then UI.GridGui.Enabled = true end
+            end,
+        })
+    end)
+
+    safe(function()
+        pDrop:Toggle({
+            Title = "Auto drop seed",
+            Desc = "Ke titik drop (tab Titik Drop)",
+            Value = Pabrik.Drop,
+            Callback = function(on) Pabrik.Drop = on end,
+        })
+    end)
+
+    addNumber(pDrop, {
+        Title = "Sisakan seed",
+        Desc = "Untuk ditanam lagi",
+        Min = 0, Max = 199, Step = 1, Default = Pabrik.Keep,
+        Callback = function(v) Pabrik.Keep = math.floor(v) end,
+    })
+
+    addNumber(pDrop, {
+        Title = "Drop kalau seed sudah",
+        Desc = "Contoh 200 & sisakan 50 = drop 150",
+        Min = 2, Max = 200, Step = 1, Default = Pabrik.DropAt,
+        Callback = function(v) Pabrik.DropAt = math.floor(v) end,
+    })
+
+    local function countKeys(t)
+        local n = 0
+        for _ in pairs(t) do n += 1 end
+        return n
+    end
+
+    task.spawn(function()
+        while alive() do
+            local seed, block = Pabrik.SeedId, Auto.blockOfSeed(Pabrik.SeedId)
+            local name, door = Auto.parseDropTarget()
+            local dropAt = (name ~= "" and name or "world ini") .. (door and (" pintu " .. door) or "")
+                .. (Pabrik.DropX >= 0 and (" (" .. Pabrik.DropX .. "," .. Pabrik.DropY .. ")") or "")
+            local txt = table.concat({
+                "Status : " .. (Pabrik.Running and ("JALAN - fase " .. tostring(Pabrik.Phase or "-")) or "BERHENTI"),
+                ("Seed   : %s x%d | block %s x%d"):format(seed and itemName(seed) or "-", seed and invCount(seed) or 0,
+                    block and itemName(block) or "-", block and invCount(block) or 0),
+                ("Break  : %s | tile %d"):format(Pabrik.BreakX >= 0 and ("(" .. Pabrik.BreakX .. "," .. Pabrik.BreakY .. ")")
+                    or "belum diatur", countKeys(Pabrik.Tiles)),
+                ("Drop   : %s | sisakan %d, drop saat >= %d"):format(Pabrik.Drop and dropAt or "mati", Pabrik.Keep, Pabrik.DropAt),
+                ("Hasil  : panen %d | tanam %d | di-drop %d"):format(Pabrik.Harvested, Pabrik.Planted, Pabrik.Dropped),
+                "Aksi   : " .. Pabrik.Status,
+            }, "\n")
+            if UI.PabrikStatus and txt ~= Pabrik.Shown then
+                Pabrik.Shown = txt
+                pcall(function() UI.PabrikStatus:SetDesc(txt) end)
+            end
+            -- tombol START di Grid (mode pabrik)
+            if UI.GridMode == "pabrik" and UI.GridStart then
+                UI.GridStart.Text = I18N.T(Pabrik.Running and "STOP PABRIK" or "START PABRIK")
+                UI.GridStart.BackgroundColor3 = Pabrik.Running and Color3.fromRGB(200, 60, 60) or Color3.fromRGB(46, 160, 90)
+            end
+            task.wait(1)
+        end
+    end)
+end)() end
 
 ---------------------------------------------------------------------
 -- AUTO RECONNECT
@@ -10712,8 +11191,8 @@ do (function()
             end
             local txt = table.concat({
                 "Titik  : " .. point,
-                "Dipakai: Farmer & Auto Farm (otomatis saat item ~190)",
-                ("Di-drop: Farmer %d | Auto Farm %d"):format(Farmer.Dropped, State.Dropped),
+                "Dipakai: Pabrik (seed), Farmer & Auto Farm (otomatis saat item ~190)",
+                ("Di-drop: Pabrik %d | Farmer %d | Auto Farm %d"):format(Pabrik.Dropped, Farmer.Dropped, State.Dropped),
                 "Catatan: drop di titik ini tidak di-collect lagi",
             }, "\n")
             if UI.DropPointStatus and txt ~= UI.DropPointShown then
@@ -11465,7 +11944,6 @@ end)
 ---------------------------------------------------------------------
 Session.Cleanup = function()
     AutoDrop.On, AutoDrop.Cancelled = false, true
-    AutoDrop.Busy = false
     State.Running = false
     Clear.Running = false
     Farmer.Running = false
