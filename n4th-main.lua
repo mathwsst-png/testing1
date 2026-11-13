@@ -7068,14 +7068,22 @@ local function routeDropStep()
 end
 
 task.spawn(function()
+    local lastBlockedLog = 0
     while alive() do
-        if RouteDrop.Running and not AutoDrop.Busy and not Pabrik.Traveling then
-            local ok, err = pcall(routeDropStep)
-            if not ok then
-                RouteDrop.Status = "Error: " .. tostring(err)
-                routeDropLog("EXCEPTION routeDropStep: " .. tostring(err), true)
-                warn("[n4th] Auto Route Drop: " .. tostring(err))
-                task.wait(1)
+        if RouteDrop.Running then
+            if AutoDrop.Busy or Pabrik.Traveling then
+                if os.clock() - lastBlockedLog > 5 then
+                    lastBlockedLog = os.clock()
+                    routeDropLog("MENUNGGU: fitur lain sedang memakai gerakan (AutoDrop.Busy=" .. tostring(AutoDrop.Busy) .. ", Pabrik.Traveling=" .. tostring(Pabrik.Traveling) .. ")", true)
+                end
+            else
+                local ok, err = pcall(routeDropStep)
+                if not ok then
+                    RouteDrop.Status = "Error: " .. tostring(err)
+                    routeDropLog("EXCEPTION routeDropStep: " .. tostring(err), true)
+                    warn("[n4th] Auto Route Drop: " .. tostring(err))
+                    task.wait(1)
+                end
             end
         end
         task.wait(0.2)
@@ -9168,43 +9176,61 @@ do (function()
             end,
         })
     end)
+    local function startRouteDrop(source)
+        routeDropLog("PERMINTAAN START diterima dari " .. tostring(source), true)
+        local reason
+        if not Refs.World or not playerState() then reason = "Masuk world terlebih dahulu"
+        elseif not RouteDrop.TargetId then reason = "Pilih Seed / Block target"
+        elseif not RouteDrop.PlatformId then reason = "Pilih platform pijakan"
+        elseif RouteDrop.DropX < 0 or RouteDrop.DropY < 0 then reason = "Tentukan Drop Point terlebih dahulu"
+        elseif type(rawget(Refs.Hud or {}, "onDrop")) ~= "function" then reason = "Fungsi drop game belum tersedia"
+        elseif State.Running or Clear.Running or Farmer.Running or Pabrik.Running or Build.Running then reason = "Hentikan aktivitas farming lain terlebih dahulu"
+        elseif Guard.Mode ~= "idle" then reason = "Penjaga sedang aktif; tunggu sampai idle" end
+        if reason then
+            RouteDrop.Running = false
+            RouteDrop.Status = "Start ditolak: " .. reason
+            routeDropLog("START DITOLAK: " .. reason, true)
+            notify("Auto Route Drop", reason, 4)
+            if UI.RouteDropToggle then UI.later("routeDropToggleOff", function() UI.RouteDropToggle:Set(false) end) end
+            return false
+        end
+        RouteDrop.World = Refs.World
+        RouteDrop.Running = true
+        table.clear(RouteDrop.Skip)
+        RouteDrop.Status = "Memulai tracking"
+        routeDropLog(("START BERHASIL: target=%s [%s], platform=%s [%s], drop=(%d,%d), world=%s, inv=%d"):format(
+            itemName(RouteDrop.TargetId), tostring(RouteDrop.TargetId),
+            itemName(RouteDrop.PlatformId), tostring(RouteDrop.PlatformId),
+            RouteDrop.DropX, RouteDrop.DropY, tostring(Guard.worldName()), invCount(RouteDrop.TargetId)), true)
+        AutoDrop.On = false
+        return true
+    end
+
     safe(function()
         UI.RouteDropToggle = control:Toggle({
             Title = "Jalankan Auto Route Drop",
-            Desc = "Tracking drop di platform, kumpulkan item pilihan, drop saat mencapai 200, lalu kembali ke jalur terakhir. Area Drop Point tidak ikut di-tracking.",
+            Desc = "Tracking drop di platform, kumpulkan item pilihan, drop saat mencapai 200, lalu kembali ke jalur terakhir. Jika toggle tidak merespons, gunakan tombol Mulai di bawah.",
             Value = false,
             Callback = function(on)
+                routeDropLog("CALLBACK TOGGLE diterima; value=" .. tostring(on) .. ", type=" .. typeof(on), true)
                 if on then
-                    local reason
-                    if not Refs.World or not playerState() then reason = "Masuk world terlebih dahulu"
-                    elseif not RouteDrop.TargetId then reason = "Pilih Seed / Block target"
-                    elseif not RouteDrop.PlatformId then reason = "Pilih platform pijakan"
-                    elseif RouteDrop.DropX < 0 then reason = "Tentukan Drop Point terlebih dahulu"
-                    elseif type(rawget(Refs.Hud or {}, "onDrop")) ~= "function" then reason = "Fungsi drop game belum tersedia"
-                    elseif State.Running or Clear.Running or Farmer.Running or Pabrik.Running or Build.Running then reason = "Hentikan aktivitas farming lain terlebih dahulu"
-                    elseif Guard.Mode ~= "idle" then reason = "Penjaga sedang aktif; tunggu sampai idle" end
-                    if reason then
-                        RouteDrop.Running = false
-                        routeDropLog("START DITOLAK: " .. reason, true)
-                        notify("Auto Route Drop", reason, 4)
-                        if UI.RouteDropToggle then UI.later("routeDropToggleOff", function() UI.RouteDropToggle:Set(false) end) end
-                        return
-                    end
-                    RouteDrop.World = Refs.World
-                    RouteDrop.Running = true
-                    table.clear(RouteDrop.Skip)
-                    RouteDrop.Status = "Memulai tracking"
-                    routeDropLog(("START: target=%s [%s], platform=%s [%s], drop=(%d,%d), world=%s, inv=%d"):format(
-                        itemName(RouteDrop.TargetId), tostring(RouteDrop.TargetId),
-                        itemName(RouteDrop.PlatformId), tostring(RouteDrop.PlatformId),
-                        RouteDrop.DropX, RouteDrop.DropY, tostring(Guard.worldName()), invCount(RouteDrop.TargetId)), true)
-                    AutoDrop.On = false
+                    startRouteDrop("toggle")
                 else
                     RouteDrop.Running = false
                     RouteDrop.Status = "Dihentikan"
                     routeDropLog("Auto Route Drop dihentikan dari toggle.", true)
                     releaseInput()
                 end
+            end,
+        })
+    end)
+    safe(function()
+        control:Button({
+            Title = "MULAI Auto Route Drop (Fallback)",
+            Desc = "Gunakan tombol ini jika toggle tidak memanggil fungsi start.",
+            Callback = function()
+                routeDropLog("TOMBOL MULAI diklik.", true)
+                startRouteDrop("tombol fallback")
             end,
         })
     end)
