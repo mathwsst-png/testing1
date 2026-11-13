@@ -5336,36 +5336,7 @@ local function clearLoop()
         local bottom = topRow + 1 -- 2 baris dibersihkan dulu sebelum turun
         local dir = bandDir(topRow, s)
 
-        -- 1) Auto Break: dekati bagian tengah grup 5 tile terlebih dahulu.
-        -- Jangkauan pukul tetap memakai punchReach() asli; R kecil di bawah ini
-        -- hanya dipakai sebagai jarak tujuan A* agar karakter tidak berhenti di tepi grup.
-        if Clear.TargetId then
-            local wNow = Refs.World
-            local sx, sy = startNode(s)
-            local bandNow = bandTargets(topRow, bottom, dir, nil)
-            if #bandNow > 0 then
-                local groupNow = {}
-                for _, t in ipairs(bandNow) do
-                    if (t.x - bandNow[1].x) * dir <= 4 then
-                        groupNow[#groupNow + 1] = t
-                    end
-                end
-                if #groupNow > 0 then
-                    local center = groupNow[math.ceil(#groupNow / 2)]
-                    local dx = abs((s.x) - (center.x + 0.5))
-                    local dy = abs((s.y - 0.475) - (center.y + 0.5))
-                    if dx > 0.85 or dy > 0.85 then
-                        local centerGoal = { center }
-                        centerGoal.maxY = center.y + 1
-                        travelGroup(sx, sy, centerGoal, math.min(punchReach() - 0.35, 0.65),
-                            scaffoldId() ~= nil, Clear.Skip, ClearFail)
-                        continue
-                    end
-                end
-            end
-        end
-
-        -- 2) Pecahkan semua tile yang sudah terjangkau dari posisi yang tepat
+        -- 1) Pecahkan yang terjangkau
         local list = clearInReach(s, bottom, dir)
         if #list > 0 then
             if clearBreakList(list, s) > 0 then idle = 0 end
