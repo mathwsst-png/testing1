@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-11-lite-perf-6-names"
+Session.Build = "2026-11-11-lite-perf-7-strict-itemdb"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -11220,10 +11220,11 @@ Box.ConnLang = box(ConnTab, "Bahasa / Language", false)
 -- Ini mencegah tabel terjemahan I18N.PH (array {teks_id, teks_en}) terpilih.
 function Session.entryName(entry)
     if type(entry) ~= "table" then return nil end
-    for _, key in ipairs({ "name", "Name", "displayName", "DisplayName", "display_name", "title", "Title", "label", "Label", "itemName", "ItemName" }) do
-        local value = rawget(entry, key)
-        if type(value) == "string" and value ~= "" then return value end
-    end
+    -- ItemDB yang dipakai script ini mengakses field `name` secara langsung.
+    -- Jangan menerima label terjemahan / displayName sebagai pengganti.
+    local value = rawget(entry, "name")
+    if type(value) == "string" and value ~= "" then return value end
+    return nil
 end
 
 function Session.isRealItemDB(db)
@@ -11233,20 +11234,25 @@ function Session.isRealItemDB(db)
     local count, named, metadata = 0, 0, 0
     for id, entry in pairs(db) do
         if type(id) == "number" and id >= 0 and id % 1 == 0 and type(entry) == "table" then
-            -- Pola array dua bahasa bukan metadata item game.
-            if type(rawget(entry, 1)) == "string" and type(rawget(entry, 2)) == "string" then
+            -- Array {teks_id, teks_en} adalah tabel bahasa, bukan record item.
+            if type(rawget(entry, 1)) == "string" or type(rawget(entry, 2)) == "string" then
                 return false
             end
             count += 1
-            if Session.entryName(entry) then named += 1 end
-            if type(rawget(entry, "hits")) == "number" or type(rawget(entry, "solid")) == "boolean"
-                or rawget(entry, "kind") == "seed" then
+            if type(rawget(entry, "name")) == "string" and rawget(entry, "name") ~= "" then named += 1 end
+            if type(rawget(entry, "hits")) == "number"
+                or type(rawget(entry, "solid")) == "boolean"
+                or type(rawget(entry, "kind")) == "string"
+                or type(rawget(entry, "seedId")) == "number"
+                or type(rawget(entry, "deadly")) == "boolean"
+                or type(rawget(entry, "hurts")) == "boolean" then
                 metadata += 1
             end
-            if count >= 160 then break end
         end
     end
-    return count >= 20 and named / count >= 0.85 and metadata >= 8
+    -- Wajib memiliki nama dan metadata yang memang dibaca oleh fitur farming.
+    return count >= 20 and named >= 20 and named / count >= 0.85
+        and metadata >= math.max(8, math.ceil(count * 0.25))
 end
 
 -- Cara pertama: cari database pada upvalue fungsi milik data world aktif.
@@ -11323,7 +11329,15 @@ function Session.fingerprintItemDB()
             local score = 0
             for _, id in ipairs(ids) do
                 local entry = rawget(candidate, id)
-                if type(entry) == "table" and Session.entryName(entry) then score += 1 end
+                if type(entry) == "table" and Session.entryName(entry)
+                    and (type(rawget(entry, "hits")) == "number"
+                        or type(rawget(entry, "solid")) == "boolean"
+                        or type(rawget(entry, "kind")) == "string"
+                        or type(rawget(entry, "seedId")) == "number"
+                        or type(rawget(entry, "deadly")) == "boolean"
+                        or type(rawget(entry, "hurts")) == "boolean") then
+                    score += 1
+                end
             end
             if score > bestScore then
                 best, bestScore = candidate, score
@@ -11368,6 +11382,7 @@ function Session.diagnose()
     local function add(t) out[#out + 1] = t end
     add("== n4th diagnosa == build " .. tostring(Session.Build))
     add("ItemDB hilang saat start: " .. tostring(Session.ItemDBMissing == true))
+    add("Validasi sumber ItemDB: " .. tostring(Session.isRealItemDB and Session.isRealItemDB(Session.ItemDBSource) or false))
     add("Referensi: " .. refsText())
     local src = Session.ItemDBSource
     if type(src) == "table" then
