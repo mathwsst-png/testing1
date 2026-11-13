@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-11-lite-perf-7-strict-itemdb"
+Session.Build = "2026-11-13-selected-farm-security-settings"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -8622,14 +8622,12 @@ local function safe(fn)
     if not ok then warn("[n4th] UI error: " .. tostring(err)) end
 end
 
--- Sidebar disederhanakan menjadi tiga tab utama.
--- Semua panel farming lama diarahkan ke FARM, panel keamanan ke PENJAGA,
--- dan seluruh konfigurasi ke SETELAN. Logika sistem di bawah tetap dipakai.
+-- Sidebar dikelompokkan: grup utama bisa dibuka / ditutup (isinya tab-tab)
 local Groups = {}
 for _, g in ipairs({
-    { key = "farm", title = "FARM", icon = "sprout", opened = true },
-    { key = "aman", title = "PENJAGA", icon = "shield", opened = true },
-    { key = "setel", title = "SETELAN", icon = "settings", opened = true },
+    { key = "farm", title = "Farming", icon = "sprout", opened = true },
+    { key = "aman", title = "Keamanan", icon = "shield" },
+    { key = "setel", title = "Setelan", icon = "settings" },
 }) do
     local ok, sec = pcall(function()
         return Window:Section({ Title = g.title, Icon = g.icon, Opened = g.opened == true })
@@ -8637,50 +8635,37 @@ for _, g in ipairs({
     if ok and type(sec) == "table" and type(sec.Tab) == "function" then Groups[g.key] = sec end
 end
 
-local makeTab
-do
-    local MainTabs = {}
-    -- Tab kosong untuk panel tambahan lama yang tidak termasuk tiga menu pilihan.
-    -- Sistem intinya tetap berjalan; hanya kontrol UI tambahan tersebut yang disembunyikan.
-    local NullTab = {}
-    -- Metode kontrol tambahan yang tidak ditampilkan menjadi no-op agar
-    -- pemanggil lama seperti Refresh/Select tetap aman.
-    NullTab.__index = function(self)
-        return function() return self end
-    end
-    function NullTab:Section() return self end
-    function NullTab:Paragraph() return self end
-    function NullTab:Toggle() return self end
-    function NullTab:Button() return self end
-    function NullTab:Slider() return self end
-    function NullTab:Input() return self end
-    function NullTab:Dropdown() return self end
-    function NullTab:SetDesc() end
-    function NullTab:SetTitle() end
-    setmetatable(NullTab, NullTab)
-
-    makeTab = function(title, icon, group)
-        if group == "fitur" then
-            UI.Tabs[title] = nil
-            return NullTab
+-- Tab yang tidak dipilih sengaja tidak dibuat. NullTab menjaga kode pendukung
+-- tetap aman tanpa menampilkan fitur Auto Drop, Clear World, Farmer, Lahan, Pabrik,
+-- maupun tab Fitur lainnya pada UI.
+local HiddenTab
+HiddenTab = setmetatable({}, {
+    __index = function()
+        return function()
+            return HiddenTab
         end
-        local tab = MainTabs[group]
-        if not tab then
-            local parent = (group and Groups[group]) or Window
-            local labels = { farm = "FARM", aman = "PENJAGA", setel = "SETELAN" }
-            local icons = { farm = "sprout", aman = "shield", setel = "settings" }
-            local ok, created = pcall(function()
-                return parent:Tab({ Title = labels[group] or title, Icon = icons[group] or icon })
-            end)
-            if not ok or not created then
-                created = Window:Tab({ Title = labels[group] or title })
-            end
-            tab = created
-            MainTabs[group] = tab
-        end
-        UI.Tabs[title] = tab
-        return tab
+    end,
+})
+local HiddenTabs = {
+    ["Auto Drop"] = true,
+    ["Clear World"] = true,
+    ["Farmer"] = true,
+    ["Growscan"] = true,
+    ["Statistik"] = true,
+    ["Tas"] = true,
+    ["Lahan"] = true,
+    ["Pabrik"] = true,
+    ["Titik Drop"] = true,
+}
+local function makeTab(title, icon, group)
+    if HiddenTabs[title] or group == "fitur" then
+        return HiddenTab
     end
+    local parent = (group and Groups[group]) or Window
+    local ok, tab = pcall(function() return parent:Tab({ Title = title, Icon = icon }) end)
+    if not ok or not tab then tab = Window:Tab({ Title = title }) end
+    UI.Tabs[title] = tab
+    return tab
 end
 
 -- Kotak di dalam tab yang bisa dibuka / ditutup (supaya tab tidak terlihat penuh).
