@@ -402,6 +402,7 @@ do
     local function scanFiltered()
         if filteredTried then return end
         filteredTried = true
+        Session.ModuleScan.FilterAt = os.clock()
         local api = filtergc or filter_gc
         if type(api) ~= "function" then return end
         -- Filter native Arceus menghindari menyalin seluruh heap ke tabel Lua.
@@ -484,6 +485,11 @@ do
     end
     local function structuralModule(name, retry)
         if not table.find(structuralNames, name) then return nil end
+        -- filtergc hanya dipindai sekali pada versi lama. Saat retry, izinkan
+        -- pemindaian ulang berkala agar modul yang terlambat muncul bisa ditemukan.
+        if retry and os.clock() - (Session.ModuleScan.FilterAt or 0) > 3 then
+            filteredTried, filteredMatches = false, {}
+        end
         scanFiltered()
         local filtered = filteredMatches[name]
         if filtered then
@@ -11210,60 +11216,149 @@ Box.ConnCfg = box(ConnTab, "Config", true)
 Box.ConnCalib = box(ConnTab, "Koreksi posisi", false)
 Box.ConnLang = box(ConnTab, "Bahasa / Language", false)
 
--- FIX: cari ItemDB lewat "sidik jari" ID block yang ada di world (tidak bergantung nama field game).
+-- FIX: validasi ItemDB berdasarkan bentuk data item, bukan sekadar tabel berisi ID.
+-- Ini mencegah tabel terjemahan I18N.PH (array {teks_id, teks_en}) terpilih.
+function Session.entryName(entry)
+    if type(entry) ~= "table" then return nil end
+    for _, key in ipairs({ "name", "Name", "displayName", "DisplayName", "display_name", "title", "Title", "label", "Label", "itemName", "ItemName" }) do
+        local value = rawget(entry, key)
+        if type(value) == "string" and value ~= "" then return value end
+    end
+end
+
+function Session.isRealItemDB(db)
+    if type(db) ~= "table" or db == I18N.PH or db == I18N.EN or db == I18N.list or db == I18N.RAW then
+        return false
+    end
+    local count, named, metadata = 0, 0, 0
+    for id, entry in pairs(db) do
+        if type(id) == "number" and id >= 0 and id % 1 == 0 and type(entry) == "table" then
+            -- Pola array dua bahasa bukan metadata item game.
+            if type(rawget(entry, 1)) == "string" and type(rawget(entry, 2)) == "string" then
+                return false
+            end
+            count += 1
+            if Session.entryName(entry) then named += 1 end
+            if type(rawget(entry, "hits")) == "number" or type(rawget(entry, "solid")) == "boolean"
+                or rawget(entry, "kind") == "seed" then
+                metadata += 1
+            end
+            if count >= 160 then break end
+        end
+    end
+    return count >= 20 and named / count >= 0.85 and metadata >= 8
+end
+
+-- Cara pertama: cari database pada upvalue fungsi milik data world aktif.
+function Session.itemDBFromWorld()
+    local world = Refs.World
+    if type(world) ~= "table" or type(getUpvalues) ~= "function" then
+        return nil, "world / getUpvalues belum siap"
+    end
+    local seen = {}
+    local function inspect(fn, depth)
+        if depth > 3 or seen[fn] then return nil end
+        seen[fn] = true
+        local ok, ups = pcall(getUpvalues, fn)
+        if not ok or type(ups) ~= "table" then return nil end
+        for _, value in pairs(ups) do
+            if type(value) == "table" and value ~= world and Session.isRealItemDB(value) then
+                return value
+            elseif type(value) == "function" then
+                local found = inspect(value, depth + 1)
+                if found then return found end
+            end
+        end
+    end
+    for _, value in pairs(world) do
+        if type(value) == "function" then
+            local found = inspect(value, 0)
+            if found then return found, "upvalue fungsi World" end
+        end
+    end
+    return nil, "ItemDB tidak ditemukan pada upvalue World"
+end
+
+-- Cara kedua: cocokkan ID foreground/background, tetapi setiap entri wajib
+-- memiliki nama dan ciri metadata database item yang valid.
 function Session.fingerprintItemDB()
-    local w = Refs.World
-    if not w or type(getgc) ~= "function" then return nil, "world / getgc belum siap" end
+    local world = Refs.World
+    if type(world) ~= "table" or type(getgc) ~= "function" then
+        return nil, "world / getgc belum siap"
+    end
     local ids, seen = {}, {}
     for _, layer in ipairs({ "fg", "bg" }) do
-        local grid = w[layer]
+        local grid = world[layer]
         if type(grid) == "table" then
-            for y = 0, math.min((w.h or 1) - 1, 80) do
+            for y = 0, math.min((world.h or 1) - 1, 80) do
                 local row = grid[y]
-                if row then
-                    for x = 0, (w.w or 1) - 1 do
+                if type(row) == "table" then
+                    for x = 0, (world.w or 1) - 1 do
                         local id = row[x]
-                        if type(id) == "number" and id > 0 and not seen[id] and #ids < 14 then
+                        if type(id) == "number" and id > 0 and not seen[id] and #ids < 20 then
                             seen[id] = true
                             ids[#ids + 1] = id
                         end
                     end
                 end
+                if #ids >= 20 then break end
             end
         end
+        if #ids >= 20 then break end
     end
     if #ids < 3 then return nil, "world terlalu kosong untuk dicocokkan" end
-    local okg, objs = pcall(getgc, true)
-    if not okg or type(objs) ~= "table" then return nil, "getgc gagal" end
+
+    local ok, objects = pcall(getgc, true)
+    if not ok or type(objects) ~= "table" then
+        ok, objects = pcall(getgc)
+    end
+    if not ok or type(objects) ~= "table" then return nil, "getgc gagal" end
+
     local best, bestScore, visited = nil, 0, 0
-    local worldFg, worldBg = w.fg, w.bg
-    for _, t in pairs(objs) do
+    for _, candidate in pairs(objects) do
         visited += 1
         if visited % 2500 == 0 then task.wait() end
-        if type(t) == "table" and t ~= Refs.World and t ~= worldFg and t ~= worldBg and t ~= ItemDB then
+        if type(candidate) == "table" and candidate ~= world and candidate ~= world.fg
+            and candidate ~= world.bg and candidate ~= ItemDB and Session.isRealItemDB(candidate) then
             local score = 0
             for _, id in ipairs(ids) do
-                local okr, v = pcall(rawget, t, id)
-                if okr and type(v) == "table" then score += 1 end
+                local entry = rawget(candidate, id)
+                if type(entry) == "table" and Session.entryName(entry) then score += 1 end
             end
-            if score > bestScore then best, bestScore = t, score end
+            if score > bestScore then
+                best, bestScore = candidate, score
+            end
         end
     end
-    if best and bestScore >= math.max(3, math.floor(#ids * 0.7)) then return best, bestScore .. "/" .. #ids end
-    return nil, "tidak ada tabel yang cocok (skor terbaik " .. bestScore .. "/" .. #ids .. ")"
+    local required = math.max(3, math.ceil(#ids * 0.9))
+    if best and bestScore >= required then
+        return best, bestScore .. "/" .. #ids
+    end
+    return nil, ("tidak ada tabel valid (skor terbaik %d/%d; perlu %d)"):format(bestScore, #ids, required)
 end
 
 function Session.fixItemDB()
-    if not Session.ItemDBMissing then return true end
-    local db, info = Session.fingerprintItemDB()
-    if not db then
-        warn("[n4th] ItemDB belum ketemu lewat sidik jari: " .. tostring(info))
-        return false
+    if Session.isRealItemDB(Session.ItemDBSource) then
+        Session.ItemDBMissing = false
+        return true
     end
+    Session.ItemDBMissing = true
+
+    local db, info = Session.itemDBFromWorld()
+    if not db then db, info = Session.fingerprintItemDB() end
+    if not db or not Session.isRealItemDB(db) then
+        Session.ItemDBMissing = true
+        Session.ItemDBLastError = tostring(info or "kandidat tidak lolos validasi")
+        return false, Session.ItemDBLastError
+    end
+
     Session.ItemDBSource = db
-    table.clear(ItemDB)
+    table.clear(ItemDB) -- kosongkan cache proxy agar ID dibaca ulang dari database baru
+    table.clear(itemNameCache)
+    lastInvSig, lastSeedSig, lastBlockSig = nil, nil, nil
     Session.ItemDBMissing = false
-    print("[n4th] ItemDB ditemukan lewat sidik jari world (" .. tostring(info) .. ")")
+    Session.ItemDBLastError = nil
+    print("[n4th] ItemDB valid (" .. tostring(info) .. ")")
     return true
 end
 
@@ -11399,6 +11494,8 @@ function Session.diagnose()
 end
 
 local function reconnect(show)
+    -- Jangan pernah mempertahankan sumber ItemDB yang gagal validasi.
+    if not Session.isRealItemDB(Session.ItemDBSource) then Session.ItemDBMissing = true end
     -- hentikan Clear / Farmer dulu
     if Clear.Running then stopClear("Dihentikan: hubungkan ulang ke game") end
     if Farmer.Running then stopFarmer("Dihentikan: hubungkan ulang ke game") end
@@ -11722,6 +11819,29 @@ task.spawn(function()
     while alive() and LocalPlayer:GetAttribute("GameReady") ~= true and os.clock() < readyDeadline do task.wait(0.25) end
     if not alive() then return end
     reconnect("n4th v5.2")
+    -- Retry ItemDB sampai 120 detik untuk kasus data game baru tersedia setelah reconnect.
+    task.spawn(function()
+        local startedAt = os.clock()
+        while alive() and os.clock() - startedAt < 120 do
+            if Refs.World then
+                local okDB = Session.fixItemDB()
+                if okDB then
+                    if os.clock() - startedAt > 3 then
+                        UI.later("invForce", function() doInvRefresh(true) end)
+                        if UI.WorldBreakRefresh then
+                            UI.later("worldBreakItems", function() UI.WorldBreakRefresh(true) end)
+                        end
+                        notify("ItemDB", "Data block berhasil dimuat", 3)
+                    end
+                    return
+                end
+            end
+            task.wait(2.5)
+        end
+        if alive() and Session.ItemDBMissing then
+            warn("[n4th] ItemDB belum ditemukan setelah 120 detik. Masuk ke world lalu tekan 'Hubungkan ke game'. Terakhir: " .. tostring(Session.ItemDBLastError))
+        end
+    end)
     -- FIX: kalau WorldMenu.isDown belum terpasang saat start, coba lagi sampai ketemu
     if not OrigIsDown then
         task.spawn(function()
