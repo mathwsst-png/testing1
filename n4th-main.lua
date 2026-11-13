@@ -6891,12 +6891,18 @@ end
 
 local function routeDropOnPlatform(d)
     if not d or type(d.x) ~= "number" or type(d.y) ~= "number" or not RouteDrop.PlatformId then return false end
-    local x = math.floor(d.x)
-    local y = math.floor(d.y + 0.5)
-    -- Posisi drop dapat tersimpan di atas atau tepat pada tile platform, tergantung frame fisika.
-    return fgIdAt(x, y) == RouteDrop.PlatformId
-        or fgIdAt(x, y + 1) == RouteDrop.PlatformId
-        or fgIdAt(x, y - 1) == RouteDrop.PlatformId
+    -- Koordinat drop pada beberapa versi client bisa jatuh di tengah tile atau
+    -- sedikit bergeser akibat fisika. Cek kolom tile terdekat dan pijakan di
+    -- sekitar posisi drop (arah +Y adalah ke bawah pada grid world).
+    local xs = { math.floor(d.x), math.floor(d.x + 0.5), math.floor(d.x - 0.5) }
+    local baseY = math.floor(d.y + 0.5)
+    local ys = { baseY - 1, baseY, baseY + 1, baseY + 2 }
+    for _, x in ipairs(xs) do
+        for _, y in ipairs(ys) do
+            if fgIdAt(x, y) == RouteDrop.PlatformId then return true end
+        end
+    end
+    return false
 end
 
 local function routeDropAtPoint(d)
@@ -6908,15 +6914,31 @@ local function routeDropTargets()
     local list, out = Drops.list, {}
     if not list then return out end
     local now = os.clock()
-    for _, d in ipairs(list) do
-        if type(d) == "table" and d.id == RouteDrop.TargetId and (d.n or 0) > 0
-            and type(d.x) == "number" and type(d.y) == "number"
-            and d.armed ~= false and not routeDropAtPoint(d)
-            and routeDropOnPlatform(d)
-            and not (RouteDrop.Skip[d.uid or d] and now < RouteDrop.Skip[d.uid or d]) then
-            out[#out + 1] = d
+    local diag = { total = 0, item = 0, position = 0, armed = 0, platform = 0, ready = 0 }
+    -- pairs dipakai agar drop tetap terbaca jika daftar game memiliki index yang berlubang.
+    for _, d in pairs(list) do
+        if type(d) == "table" then
+            diag.total += 1
+            if d.id == RouteDrop.TargetId and (d.n or 0) > 0 then
+                diag.item += 1
+                if type(d.x) == "number" and type(d.y) == "number" then
+                    diag.position += 1
+                    if d.armed ~= false and not routeDropAtPoint(d) then
+                        diag.armed += 1
+                        if routeDropOnPlatform(d) then
+                            diag.platform += 1
+                            local key = d.uid or d
+                            if not (RouteDrop.Skip[key] and now < RouteDrop.Skip[key]) then
+                                out[#out + 1] = d
+                                diag.ready += 1
+                            end
+                        end
+                    end
+                end
+            end
         end
     end
+    RouteDrop.LastScanDiag = diag
     local st = playerState()
     local currentY = st and (st.y - 0.475) or 0
     local leftToRight = RouteDrop.Direction ~= "Kanan → Kiri"
@@ -7013,7 +7035,10 @@ local function routeDropStep()
     local targets = routeDropTargets()
     if #targets == 0 then
         RouteDrop.Status = "Menunggu " .. itemName(RouteDrop.TargetId) .. " di atas platform " .. itemName(RouteDrop.PlatformId)
-        routeDropLog(("Tidak ada target valid. Item=%d platform=%d drops=%d"):format(RouteDrop.TargetId, RouteDrop.PlatformId, #Drops.list))
+        local q = RouteDrop.LastScanDiag or {}
+        routeDropLog(("Scan kosong: target=%d platform=%d totalDrop=%d itemCocok=%d posisiValid=%d armed=%d diPlatform=%d siap=%d"):format(
+            RouteDrop.TargetId, RouteDrop.PlatformId, q.total or 0, q.item or 0,
+            q.position or 0, q.armed or 0, q.platform or 0, q.ready or 0))
         return
     end
     local target = targets[1]
@@ -9045,9 +9070,28 @@ do (function()
         for _, id in ipairs(ids) do labels[#labels + 1] = ("%s [%d]"):format(itemName(id), id) end
         return labels
     end
-    local function idFromLabel(value)
-        if type(value) == "table" then value = value[1] end
-        return tonumber(tostring(value or ""):match("%[(%d+)%]$"))
+    local function idFromLabel(value, platformOnly)
+        local options = itemOptions(platformOnly)
+        if type(value) == "table" then
+            -- Beberapa versi dropdown mengirim object pilihan, bukan string label.
+            local candidate = value.Value or value.value or value.Name or value.name
+                or value.Text or value.text or value[1]
+            if candidate ~= nil then value = candidate end
+        end
+        if type(value) == "number" then
+            -- Jika angka adalah ID valid, gunakan langsung; jika bukan, anggap index dropdown.
+            if ItemDB[value] then return value end
+            local label = options[value]
+            return label and tonumber(tostring(label):match("%[(%d+)%]")) or nil
+        end
+        local str = tostring(value or "")
+        local id = tonumber(str:match("%[(%d+)%]"))
+        if id and ItemDB[id] then return id end
+        -- Fallback untuk callback dropdown yang mengirim label tanpa akhiran ID.
+        for _, label in ipairs(options) do
+            if str == label then return tonumber(label:match("%[(%d+)%]")) end
+        end
+        return nil
     end
 
     safe(function()
@@ -9056,7 +9100,7 @@ do (function()
             Desc = "Pilih satu jenis item yang akan dilacak dan dikumpulkan.",
             Values = itemOptions(false),
             Callback = function(v)
-                local id = idFromLabel(v)
+                local id = idFromLabel(v, false)
                 if id then
                     RouteDrop.TargetId = id
                     routeDropLog(("Target dipilih: %s [%d]"):format(itemName(id), id), true)
@@ -9073,7 +9117,7 @@ do (function()
             Desc = "Pilih platform tempat drop berada; Wooden Platform bisa dipilih jika tersedia.",
             Values = itemOptions(true),
             Callback = function(v)
-                local id = idFromLabel(v)
+                local id = idFromLabel(v, true)
                 if id then
                     RouteDrop.PlatformId = id
                     routeDropLog(("Platform dipilih: %s [%d]"):format(itemName(id), id), true)
