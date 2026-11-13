@@ -807,6 +807,33 @@ local RouteDrop = {
     World = nil,
 }
 
+-- Log diagnostik Auto Route Drop. Riwayat dibatasi agar tidak membebani game.
+RouteDrop.Logs = {}
+RouteDrop.LastLog = nil
+RouteDrop.LastStatusLog = nil
+local function routeDropLog(message, force)
+    message = tostring(message or "-")
+    if not force and RouteDrop.LastLog == message then return end
+    RouteDrop.LastLog = message
+    local stamp = os.date("%H:%M:%S")
+    local line = ("[%s] %s"):format(stamp, message)
+    table.insert(RouteDrop.Logs, line)
+    while #RouteDrop.Logs > 150 do table.remove(RouteDrop.Logs, 1) end
+    print("[n4th][RouteDrop] " .. line)
+end
+
+local function routeDropCopyLogs()
+    local clip = setclipboard or toclipboard or (syn and syn.write_clipboard)
+    local payload = table.concat(RouteDrop.Logs, "\\n")
+    if payload == "" then payload = "[n4th][RouteDrop] Belum ada log." end
+    if type(clip) ~= "function" then
+        return false, "Fungsi clipboard tidak tersedia di executor ini. Log tetap ada di F9."
+    end
+    local ok, err = pcall(clip, payload)
+    if not ok then return false, "Gagal menyalin log: " .. tostring(err) end
+    return true, "Log berhasil disalin (" .. tostring(#RouteDrop.Logs) .. " baris)."
+end
+
 
 local Guard = {
     On = false,
@@ -6908,8 +6935,10 @@ local function routeDropDoDrop(resumeX, resumeY)
     local live = routeDropLive
     local dx, dy = RouteDrop.DropX, RouteDrop.DropY
     RouteDrop.Status = ("Menuju Drop Point (%d,%d)"):format(dx, dy)
+    routeDropLog("Mulai perjalanan ke Drop Point " .. dx .. "," .. dy, true)
     if not walkTo(dx, dy, 60, live) then
         RouteDrop.Status = "Gagal mencapai Drop Point"
+        routeDropLog("ERROR: walkTo gagal mencapai Drop Point. Periksa pijakan/jalur dan koordinat.", true)
         return false
     end
     if not live() then return false end
@@ -6924,19 +6953,25 @@ local function routeDropDoDrop(resumeX, resumeY)
     }
     while #AutoDrop.Zones > 60 do table.remove(AutoDrop.Zones, 1) end
     RouteDrop.Status = "Drop " .. itemName(RouteDrop.TargetId) .. " x200"
+    local beforeDrop = invCount(RouteDrop.TargetId)
+    routeDropLog(("Memanggil dropItems: item=%d, jumlah inventori=%d, diminta=200"):format(RouteDrop.TargetId, beforeDrop), true)
     local got, err = dropItems(RouteDrop.TargetId, 200, live, true)
     RouteDrop.Dropped += got
     if err or got <= 0 then
         RouteDrop.Status = "Drop gagal: " .. tostring(err or "tidak ada item yang ter-drop")
+        routeDropLog("ERROR: proses drop gagal: " .. tostring(err or "jumlah drop 0"), true)
         return false
     end
+    routeDropLog(("DROP BERHASIL: %s x%d; sisa inventori=%d"):format(itemName(RouteDrop.TargetId), got, invCount(RouteDrop.TargetId)), true)
     if not live() then return false end
     RouteDrop.Status = "Kembali ke jalur farming"
     if resumeX and resumeY then
         if not walkTo(resumeX, resumeY, 60, live) then
             RouteDrop.Status = "Drop berhasil, tetapi gagal kembali ke jalur"
+            routeDropLog("WARNING: drop berhasil tetapi walkTo gagal kembali ke posisi farming.", true)
             return false
         end
+        routeDropLog(("Kembali ke jalur berhasil di (%d,%d)"):format(resumeX, resumeY), true)
     end
     return true
 end
@@ -6945,11 +6980,13 @@ local function routeDropStep()
     if RouteDrop.World and Refs.World ~= RouteDrop.World then
         RouteDrop.Running = false
         RouteDrop.Status = "World berubah; Auto Route Drop dihentikan untuk keamanan"
+        routeDropLog("ERROR: referensi world berubah; fitur dihentikan.", true)
         releaseInput()
         return
     end
     if not RouteDrop.TargetId or not RouteDrop.PlatformId then
         RouteDrop.Status = "Pilih item target dan platform pijakan"
+        routeDropLog("Menunggu konfigurasi: TargetId=" .. tostring(RouteDrop.TargetId) .. ", PlatformId=" .. tostring(RouteDrop.PlatformId))
         return
     end
     if RouteDrop.DropX < 0 or RouteDrop.DropY < 0 then
@@ -6963,6 +7000,7 @@ local function routeDropStep()
     if not Drops.list then
         findDropRefs()
         RouteDrop.Status = "Mencari daftar drop di world"
+        routeDropLog("Belum ada Drops.list; memanggil findDropRefs().")
         return
     end
     if invCount(RouteDrop.TargetId) >= 200 then
@@ -6975,6 +7013,7 @@ local function routeDropStep()
     local targets = routeDropTargets()
     if #targets == 0 then
         RouteDrop.Status = "Menunggu " .. itemName(RouteDrop.TargetId) .. " di atas platform " .. itemName(RouteDrop.PlatformId)
+        routeDropLog(("Tidak ada target valid. Item=%d platform=%d drops=%d"):format(RouteDrop.TargetId, RouteDrop.PlatformId, #Drops.list))
         return
     end
     local target = targets[1]
@@ -6982,8 +7021,10 @@ local function routeDropStep()
     local s = playerState()
     if not s then return end
     RouteDrop.Status = ("Menuju %s (%d,%d)"):format(itemName(RouteDrop.TargetId), tx, ty)
+    routeDropLog(("Target ditemukan: %s pada (%.2f, %.2f); mencoba jalan ke (%d,%d)"):format(itemName(RouteDrop.TargetId), target.x, target.y, tx, ty), true)
     if walkTo(tx, ty, 35, routeDropLive) then
         RouteDrop.CollectedStops += 1
+        routeDropLog("walkTo target berhasil; menunggu fisika collect.", true)
         RouteDrop.Skip[target.uid or target] = os.clock() + 2
         task.wait(0.35) -- beri waktu fisika game mengambil drop saat badan menyentuhnya
         if invCount(RouteDrop.TargetId) >= 200 then
@@ -6997,6 +7038,7 @@ local function routeDropStep()
     else
         RouteDrop.Skip[target.uid or target] = os.clock() + 8
         RouteDrop.Status = "Target tidak terjangkau; mencari drop berikutnya"
+        routeDropLog(("ERROR: walkTo target gagal (%d,%d)."):format(tx, ty), true)
     end
 end
 
@@ -7006,6 +7048,7 @@ task.spawn(function()
             local ok, err = pcall(routeDropStep)
             if not ok then
                 RouteDrop.Status = "Error: " .. tostring(err)
+                routeDropLog("EXCEPTION routeDropStep: " .. tostring(err), true)
                 warn("[n4th] Auto Route Drop: " .. tostring(err))
                 task.wait(1)
             end
@@ -9016,7 +9059,10 @@ do (function()
                 local id = idFromLabel(v)
                 if id then
                     RouteDrop.TargetId = id
+                    routeDropLog(("Target dipilih: %s [%d]"):format(itemName(id), id), true)
                     if Session.Ready then Config.save(true) end
+                else
+                    routeDropLog("ERROR: gagal membaca ID dari pilihan Target.", true)
                 end
             end,
         })
@@ -9030,7 +9076,10 @@ do (function()
                 local id = idFromLabel(v)
                 if id then
                     RouteDrop.PlatformId = id
+                    routeDropLog(("Platform dipilih: %s [%d]"):format(itemName(id), id), true)
                     if Session.Ready then Config.save(true) end
+                else
+                    routeDropLog("ERROR: gagal membaca ID dari pilihan Platform.", true)
                 end
             end,
         })
@@ -9062,10 +9111,15 @@ do (function()
             Desc = "Berdiri di lokasi tujuan, lalu klik satu kali untuk menyimpan koordinatnya.",
             Callback = function()
                 local x, y = Auto.here()
-                if not x then notify("Auto Route Drop", "Kamu belum masuk world", 3) return end
+                if not x then
+                    routeDropLog("ERROR: klik tandai Drop Point gagal; Auto.here() tidak memberi koordinat.", true)
+                    notify("Auto Route Drop", "Kamu belum masuk world", 3)
+                    return
+                end
                 RouteDrop.DropX, RouteDrop.DropY = x, y
                 RouteDrop.World = Refs.World
                 if Session.Ready then Config.save(true) end
+                routeDropLog(("Drop Point tersimpan di (%d,%d), world=%s"):format(x, y, tostring(Guard.worldName())), true)
                 notify("Auto Route Drop", ("Drop Point tersimpan: (%d,%d)"):format(x, y), 4)
             end,
         })
@@ -9087,6 +9141,7 @@ do (function()
                     elseif Guard.Mode ~= "idle" then reason = "Penjaga sedang aktif; tunggu sampai idle" end
                     if reason then
                         RouteDrop.Running = false
+                        routeDropLog("START DITOLAK: " .. reason, true)
                         notify("Auto Route Drop", reason, 4)
                         if UI.RouteDropToggle then UI.later("routeDropToggleOff", function() UI.RouteDropToggle:Set(false) end) end
                         return
@@ -9095,10 +9150,15 @@ do (function()
                     RouteDrop.Running = true
                     table.clear(RouteDrop.Skip)
                     RouteDrop.Status = "Memulai tracking"
+                    routeDropLog(("START: target=%s [%s], platform=%s [%s], drop=(%d,%d), world=%s, inv=%d"):format(
+                        itemName(RouteDrop.TargetId), tostring(RouteDrop.TargetId),
+                        itemName(RouteDrop.PlatformId), tostring(RouteDrop.PlatformId),
+                        RouteDrop.DropX, RouteDrop.DropY, tostring(Guard.worldName()), invCount(RouteDrop.TargetId)), true)
                     AutoDrop.On = false
                 else
                     RouteDrop.Running = false
                     RouteDrop.Status = "Dihentikan"
+                    routeDropLog("Auto Route Drop dihentikan dari toggle.", true)
                     releaseInput()
                 end
             end,
@@ -9108,8 +9168,32 @@ do (function()
         control:Button({ Title = "Hentikan Auto Route Drop", Callback = function()
             RouteDrop.Running = false
             RouteDrop.Status = "Dihentikan"
+            routeDropLog("Auto Route Drop dihentikan lewat tombol Stop.", true)
             releaseInput()
         end })
+    end)
+    safe(function()
+        control:Button({
+            Title = "Salin Log Auto Route Drop",
+            Desc = "Salin catatan berhasil/gagal ke clipboard untuk dikirim ke ChatGPT.",
+            Callback = function()
+                local ok, message = routeDropCopyLogs()
+                notify("Log Auto Route Drop", message, 5)
+                if ok then print("[n4th][RouteDrop] Log disalin ke clipboard.") end
+            end,
+        })
+    end)
+    safe(function()
+        control:Button({
+            Title = "Hapus Log",
+            Desc = "Kosongkan riwayat diagnostik sebelum pengujian baru.",
+            Callback = function()
+                table.clear(RouteDrop.Logs)
+                RouteDrop.LastLog = nil
+                routeDropLog("Log dibersihkan; sesi pengujian baru.", true)
+                notify("Log Auto Route Drop", "Riwayat log dibersihkan.", 3)
+            end,
+        })
     end)
 
     task.spawn(function()
@@ -9122,6 +9206,7 @@ do (function()
                 "Arah: " .. RouteDrop.Direction,
                 "Drop Point: " .. dropPoint,
                 ("Terkumpul (kunjungan): %d | Ter-drop: %d"):format(RouteDrop.CollectedStops, RouteDrop.Dropped),
+                ("Log diagnostik: %d baris (klik Salin Log untuk menyalin)"):format(#RouteDrop.Logs),
                 "Drop Point dikecualikan dari tracking / collect target.",
             }, "\n")
             if UI.RouteDropStatus and txt ~= RouteDrop.Shown then
