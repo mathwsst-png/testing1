@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-14-plant-ground-filter"
+Session.Build = "2026-11-14-auto-plant-tab"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -867,6 +867,7 @@ local Farmer = {
     PlantDirt = true,     -- tanah: Dirt (termasuk Grass)
     PlantWood = true,     -- pijakan: Wooden Platform
     GroundCache = {},
+    PlantOnly = false,    -- mode tab "Auto Plant": hanya tanam di Dirt / Wooden Platform (tidak disimpan)
     Collect = true,
     UseBlock = false,   -- taruh block kalau tidak ada jalan
     ScaffoldId = nil,
@@ -2410,6 +2411,10 @@ local function doInvRefresh(force)
         if #labels == 0 then labels = { "(tidak ada seed di inventori)" } end
         UI.ddRefresh(UI.SeedDropdown, labels)
         selectSaved(UI.SeedDropdown, labels, Farmer.SeedId)
+        if UI.PlantSeedDropdown then
+            UI.ddRefresh(UI.PlantSeedDropdown, labels)
+            selectSaved(UI.PlantSeedDropdown, labels, Farmer.SeedId)
+        end
         if UI.PabrikSeedDropdown then
             UI.ddRefresh(UI.PabrikSeedDropdown, labels)
             selectSaved(UI.PabrikSeedDropdown, labels, Pabrik.SeedId)
@@ -5821,8 +5826,8 @@ local FC = nil
 local function farmerCfg()
     return {
         run = function() return Farmer.Running end,
-        harvest = Farmer.Harvest or Farmer.Tractor,
-        plant = Farmer.Plant and not Farmer.Tractor,
+        harvest = (Farmer.Harvest or Farmer.Tractor) and not Farmer.PlantOnly,
+        plant = (Farmer.Plant or Farmer.PlantOnly) and not Farmer.Tractor,
         tractor = Farmer.Tractor,
         seed = Farmer.SeedId,
         only = Farmer.Focus, -- hanya panen pohon seed fokus (nil = semua)
@@ -5833,7 +5838,7 @@ local function farmerCfg()
         plantSet = nil,  -- [idx] = true: hanya tanam di tile ini
         exclude = nil,   -- [idx] = true: jangan tanam di tile ini
         row = Farmer.Row,        -- tanam rapi per baris
-        groundFilter = Farmer.GroundFilter, -- tanam hanya di atas Dirt / Wooden Platform
+        groundFilter = Farmer.GroundFilter or Farmer.PlantOnly, -- tanam hanya di atas Dirt / Wooden Platform
         collect = Farmer.Collect, -- ambil drop panen dulu sebelum lanjut
         status = function(t) Farmer.Status = t end,
         onHarvest = function(id)
@@ -6065,7 +6070,7 @@ local function updateFarmerStatus()
         Auto.nextTreeScan = os.clock() + 15
         pcall(findTreeRefs)
     end
-    if not UI.FarmerStatus then return end
+    if not UI.FarmerStatus and not UI.PlantStatus then return end
     local seed = Farmer.SeedId
     local txt = "Status  : " .. (Farmer.Running and "JALAN" or "BERHENTI")
         .. "\nPanen   : " .. Farmer.Harvested .. "  | tanam: " .. Farmer.Planted .. "  | collect: " .. State.Collected
@@ -6080,6 +6085,7 @@ local function updateFarmerStatus()
     lastFarmerText = txt
     task.defer(function()
         pcall(function() UI.FarmerStatus:SetDesc(txt) end)
+        if UI.PlantStatus then pcall(function() UI.PlantStatus:SetDesc(txt) end) end
     end)
 end
 
@@ -6207,10 +6213,10 @@ local function farmerLoop()
         end
         if r == "idle" then
             local parts = {}
-            if Farmer.Harvest or Farmer.Tractor then
+            if (Farmer.Harvest or Farmer.Tractor) and not Farmer.PlantOnly then
                 parts[#parts + 1] = nextReady and ("pohon siap ±" .. math.ceil(nextReady) .. " dtk") or "tidak ada pohon"
             end
-            if Farmer.Plant and not Farmer.Tractor then
+            if (Farmer.Plant or Farmer.PlantOnly) and not Farmer.Tractor then
                 parts[#parts + 1] = (seedCount() <= 0) and "seed habis / belum dipilih" or "tidak ada tempat tanam"
             end
             Farmer.Status = "Menunggu: " .. table.concat(parts, ", ")
@@ -6221,13 +6227,15 @@ local function farmerLoop()
 end
 
 local function setFarmerVisual()
-    if UI.FarmerToggle then pcall(function() UI.FarmerToggle:Set(Farmer.Running) end) end
+    if UI.FarmerToggle then pcall(function() UI.FarmerToggle:Set(Farmer.Running and not Farmer.PlantOnly) end) end
+    if UI.PlantToggle then pcall(function() UI.PlantToggle:Set(Farmer.Running and Farmer.PlantOnly and true or false) end) end
 end
 
 stopFarmer = function(reason)
     Farmer.Running = false
     autoEnd()
     setFarmerVisual()
+    Farmer.PlantOnly = false
     Farmer.Status = reason or "Dihentikan"
     if reason then
         notify("Farmer", reason, 5)
@@ -6240,10 +6248,10 @@ local function startFarmer()
     if Farmer.Running then return end
     if AutoDrop.Busy then notify("Auto Drop", "Tunggu perjalanan drop selesai", 3) return end
     local err = checkAutoStart()
-    if not err and not Farmer.Tractor and not Farmer.Harvest and not Farmer.Plant then
+    if not err and not Farmer.Tractor and not Farmer.Harvest and not Farmer.Plant and not Farmer.PlantOnly then
         err = "Aktifkan Auto Harvest atau Auto Plant"
     end
-    if not err and not Farmer.Tractor and not Farmer.Harvest and not Farmer.SeedId then
+    if not err and not Farmer.Tractor and (Farmer.PlantOnly or not Farmer.Harvest) and not Farmer.SeedId then
         err = "Pilih seed dulu untuk Auto Plant"
     end
     if err then
@@ -6251,7 +6259,7 @@ local function startFarmer()
         setFarmerVisual()
         return
     end
-    if (Farmer.Harvest or Farmer.Tractor) and not Refs.Trees and not findTreeRefs() then
+    if (Farmer.Harvest or Farmer.Tractor) and not Farmer.PlantOnly and not Refs.Trees and not findTreeRefs() then
         notify("Farmer", "Data pohon tidak ketemu: Auto Harvest tidak bisa cek pohon siap", 5)
     end
     if Pabrik.Running and Pabrik.stop then Pabrik.stop("Dihentikan karena Farmer dimulai") end
@@ -9248,6 +9256,105 @@ safe(function()
         Callback = function() UI.setGridMode("farm") GridGui.Enabled = true end,
     })
 end)
+
+-- ===== TAB: AUTO PLANT (tanam otomatis di atas Dirt / Wooden Platform) =====
+do
+    local tab = makeTab("Auto Plant", "sprout", "farm")
+    safe(function() UI.PlantStatus = tab:Paragraph({ Title = "Status", Desc = "Mati" }) end)
+    local ctl = box(tab, "Kontrol", true)
+    local gnd = box(tab, "Tanah / Pijakan tanam", true)
+    local function plantVisual()
+        if UI.PlantToggle then
+            pcall(function() UI.PlantToggle:Set(Farmer.Running and Farmer.PlantOnly and true or false) end)
+        end
+    end
+
+    safe(function()
+        UI.PlantToggle = ctl:Toggle({
+            Title = "Auto Plant",
+            Desc = "Jalan dan tanam seed di tile kosong yang ada Dirt atau Wooden Platform di bawahnya",
+            Value = false,
+            Callback = function(on)
+                if on then
+                    if Farmer.Running then
+                        notify("Auto Plant", "Hentikan Farmer yang sedang jalan dulu", 3)
+                        plantVisual()
+                        return
+                    end
+                    if Farmer.Tractor then
+                        notify("Auto Plant", "Matikan Mode Tractor dulu (Tractor tidak menanam)", 4)
+                        plantVisual()
+                        return
+                    end
+                    if not (Farmer.PlantDirt or Farmer.PlantWood) then
+                        notify("Auto Plant", "Pilih minimal satu: Dirt atau Wooden Platform", 4)
+                        plantVisual()
+                        return
+                    end
+                    Farmer.PlantOnly = true
+                    table.clear(Farmer.GroundCache)
+                    Auto.startFarmer()
+                    if not Farmer.Running then Farmer.PlantOnly = false end
+                    plantVisual()
+                elseif Farmer.Running and Farmer.PlantOnly then
+                    stopFarmer()
+                end
+            end,
+        })
+    end)
+    safe(function()
+        UI.PlantSeedDropdown = ctl:Dropdown({
+            Title = "Seed untuk ditanam",
+            Desc = "Hanya seed yang ada di inventori",
+            Values = { "(memuat...)" },
+            Callback = function(opt)
+                local id = tonumber(string.match(opt or "", "%[(%d+)%]$"))
+                if id then
+                    Farmer.SeedId = id
+                    table.clear(Farmer.Skip)
+                    Auto.updateFarmerStatus()
+                    if Session.Ready then Config.save(true) end
+                end
+            end,
+        })
+    end)
+    safe(function()
+        ctl:Button({
+            Title = "Refresh daftar seed",
+            Callback = function() UI.later("invForce", function() doInvRefresh(true) end) end,
+        })
+    end)
+    addNumber(ctl, {
+        Title = "Speed Plant (ms)",
+        Desc = "Jeda setelah tiap tanam seed",
+        Min = 140, Max = 2000, Step = 10, Default = Farmer.PlantMs,
+        Callback = function(v) Farmer.PlantMs = math.floor(v) end,
+    })
+    safe(function()
+        gnd:Toggle({
+            Title = "Tanam di atas Dirt",
+            Desc = "Tanah Dirt dan Grass dipakai sebagai tempat tanam",
+            Value = Farmer.PlantDirt,
+            Callback = function(on)
+                Farmer.PlantDirt = on and true or false
+                table.clear(Farmer.GroundCache)
+                table.clear(Farmer.Skip)
+            end,
+        })
+    end)
+    safe(function()
+        gnd:Toggle({
+            Title = "Tanam di atas Wooden Platform",
+            Desc = "Wooden Platform dipakai sebagai tempat tanam",
+            Value = Farmer.PlantWood,
+            Callback = function(on)
+                Farmer.PlantWood = on and true or false
+                table.clear(Farmer.GroundCache)
+                table.clear(Farmer.Skip)
+            end,
+        })
+    end)
+end
 
 -- ===== TAB: AUTO ROUTE DROP (fitur baru di bawah FARM) =====
 do (function()
