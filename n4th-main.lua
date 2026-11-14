@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-14-route-drop-row-sweep"
+Session.Build = "2026-11-14-route-drop-fixed-face"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -799,6 +799,7 @@ local RouteDrop = {
     PlatformId = nil,
     DropX = -1,
     DropY = -1,
+    DropFace = 0, -- arah hadap saat Drop Point ditandai: -1 kiri, 1 kanan, 0 belum diset
     Direction = "Kiri → Kanan",
     Status = "Mati",
     CollectedStops = 0,
@@ -1859,7 +1860,7 @@ Config.add("Farm", State, {
     "CollectAround", "CollectRadius", "CollectMode", "FastPunch", "FastPunchHits", "FastPunchMs",
     "WorldBreakId", "WorldBreakCollect",
 })
-Config.add("RouteDrop", RouteDrop, { "TargetId", "PlatformId", "DropX", "DropY", "Direction" })
+Config.add("RouteDrop", RouteDrop, { "TargetId", "PlatformId", "DropX", "DropY", "DropFace", "Direction" })
 -- Pindahkan nilai default lama. Nilai yang dipilih di versi baru tetap berlaku.
 if (Config.Data.Version == nil or Config.Data.Version == 1) and State.AfterBreakMs == 300 then
     State.AfterBreakMs = 250
@@ -6890,9 +6891,17 @@ local function routeDropLive()
         and Guard.Mode == "idle" and not AutoDrop.Busy and not Pabrik.Traveling
 end
 
+-- Pijakan = platform pilihan ATAU block padat apa pun (dirt, stone, dll.)
+local function routeDropFooting(x, y)
+    local id = fgIdAt(x, y)
+    if id == 0 then return false end
+    if RouteDrop.PlatformId and id == RouteDrop.PlatformId then return true end
+    return solidAt(x, y)
+end
+
 local function routeDropPlatformRow(d)
-    if not d or type(d.x) ~= "number" or type(d.y) ~= "number" or not RouteDrop.PlatformId then return nil end
-    -- Ambil baris Y pijakan Wooden Platform terdekat di bawah/sekitar drop.
+    if not d or type(d.x) ~= "number" or type(d.y) ~= "number" then return nil end
+    -- Ambil baris Y pijakan terdekat di bawah drop (platform/dirt/block padat).
     -- Koordinat world bertambah ke bawah, sehingga urutan Y menaik = atas ke bawah.
     local xs = { math.floor(d.x), math.floor(d.x + 0.5), math.floor(d.x - 0.5) }
     local baseY = math.floor(d.y + 0.5)
@@ -6900,7 +6909,10 @@ local function routeDropPlatformRow(d)
     local bestY, bestDist
     for _, x in ipairs(xs) do
         for _, y in ipairs(ys) do
-            if fgIdAt(x, y) == RouteDrop.PlatformId then
+            local id = fgIdAt(x, y)
+            -- platform pilihan boleh sedikit di atas; block padat lain hanya di bawah/sejajar drop
+            local okRow = (RouteDrop.PlatformId and id == RouteDrop.PlatformId) or (y >= baseY and routeDropFooting(x, y))
+            if okRow then
                 local dist = math.abs(y - (d.y + 0.5))
                 if not bestDist or dist < bestDist then bestY, bestDist = y, dist end
             end
@@ -6957,6 +6969,46 @@ local function routeDropTargets()
     return out
 end
 
+-- Berdiri tepat di tengah tile Drop Point dan menghadap arah yang sama seperti
+-- saat titik ditandai, supaya posisi drop selalu konsisten.
+local function routeDropAlign(dx, dy, live)
+    local face = RouteDrop.DropFace
+    if face ~= -1 and face ~= 1 then face = 0 end
+    local cx = dx + 0.5
+    local function facingNow()
+        local st = playerState()
+        return st and ((st.facing or 1) < 0 and -1 or 1) or 0
+    end
+    local function centered()
+        local st = playerState()
+        return st and floor(st.x) == dx and abs(st.x - cx) <= 0.15 and st.grounded
+    end
+    if centered() and (face == 0 or facingNow() == face) then return true end
+    autoBegin()
+    -- Masuk ke tile dari sisi belakang sehingga karakter otomatis menghadap arah tujuan
+    if face ~= 0 and live() and not solidAt(dx - face, dy) and not solidAt(dx - face, dy - 1) then
+        local st = playerState()
+        if st and not (floor(st.x) == dx - face and floor(st.y - 0.475) == dy) then
+            walkTo(dx - face, dy, 10, live)
+        end
+    end
+    if live() then execWalk(dx, dy, 0.12) end
+    -- Cadangan: kalau masih salah arah, tekan arah tujuan sebentar
+    if face ~= 0 and live() and facingNow() ~= face then
+        AutoInput.active = true
+        AutoInput.left, AutoInput.right = face < 0, face > 0
+        task.wait(0.05)
+        AutoInput.left, AutoInput.right = false, false
+        task.wait(0.15)
+    end
+    releaseInput()
+    autoEnd()
+    local ok = centered() and (face == 0 or facingNow() == face)
+    routeDropLog(("Posisi drop: tengah=%s, hadap=%s (target %s)"):format(
+        tostring(centered() and true or false), tostring(facingNow()), tostring(face)), true)
+    return ok
+end
+
 local function routeDropDoDrop(resumeX, resumeY)
     if invCount(RouteDrop.TargetId) < 200 then return true end
     local live = routeDropLive
@@ -6974,6 +7026,8 @@ local function routeDropDoDrop(resumeX, resumeY)
         routeDropLog("ERROR: walkTo gagal mencapai Drop Point. Periksa pijakan/jalur dan koordinat.", true)
         return false
     end
+    if not live() then return false end
+    routeDropAlign(dx, dy, live)
     if not live() then return false end
     local st = playerState()
     if not st then RouteDrop.Status = "Posisi karakter tidak terbaca" return false end
@@ -7054,8 +7108,8 @@ local function routeDropStep()
         releaseInput()
         return
     end
-    if not RouteDrop.TargetId or not RouteDrop.PlatformId then
-        RouteDrop.Status = "Pilih item target dan platform pijakan"
+    if not RouteDrop.TargetId then
+        RouteDrop.Status = "Pilih item target"
         routeDropLog("Menunggu konfigurasi: TargetId=" .. tostring(RouteDrop.TargetId) .. ", PlatformId=" .. tostring(RouteDrop.PlatformId))
         return
     end
@@ -9215,7 +9269,7 @@ do (function()
     safe(function()
         UI.RouteDropPlatform = setup:Dropdown({
             Title = "Pijakan / Platform",
-            Desc = "Pilih platform tempat drop berada; Wooden Platform bisa dipilih jika tersedia.",
+            Desc = "Opsional. Dirt, stone, dan block padat lain otomatis dianggap pijakan; pilih di sini untuk menambah platform (mis. Wooden Platform).",
             Values = itemOptions(true),
             Callback = function(v)
                 local id = idFromLabel(v, true)
@@ -9254,7 +9308,7 @@ do (function()
     safe(function()
         setup:Button({
             Title = "Tandai Drop Point di posisi sekarang",
-            Desc = "Berdiri di lokasi tujuan, lalu klik satu kali untuk menyimpan koordinatnya.",
+            Desc = "Berdiri di lokasi tujuan dan hadap ke arah drop yang diinginkan (kiri/kanan), lalu klik. Posisi dan arah hadap disimpan, dan dipakai sama persis tiap drop.",
             Callback = function()
                 local x, y = Auto.here()
                 if not x then
@@ -9263,10 +9317,12 @@ do (function()
                     return
                 end
                 RouteDrop.DropX, RouteDrop.DropY = x, y
+                local hs = playerState()
+                RouteDrop.DropFace = (hs and (hs.facing or 1) < 0) and -1 or 1
                 RouteDrop.World = Refs.World
                 if Session.Ready then Config.save(true) end
-                routeDropLog(("Drop Point tersimpan di (%d,%d), world=%s"):format(x, y, tostring(Guard.worldName())), true)
-                notify("Auto Route Drop", ("Drop Point tersimpan: (%d,%d)"):format(x, y), 4)
+                routeDropLog(("Drop Point tersimpan di (%d,%d), hadap=%s, world=%s"):format(x, y, RouteDrop.DropFace < 0 and "kiri" or "kanan", tostring(Guard.worldName())), true)
+                notify("Auto Route Drop", ("Drop Point tersimpan: (%d,%d), hadap %s"):format(x, y, RouteDrop.DropFace < 0 and "kiri" or "kanan"), 4)
             end,
         })
     end)
@@ -9286,7 +9342,6 @@ do (function()
             local reason
             if not Refs.World or type(Refs.State) ~= "function" then reason = "Masuk world dan tunggu data karakter"
             elseif not RouteDrop.TargetId then reason = "Pilih Seed / Block target"
-            elseif not RouteDrop.PlatformId then reason = "Pilih platform pijakan"
             elseif type(RouteDrop.DropX) ~= "number" or type(RouteDrop.DropY) ~= "number" or RouteDrop.DropX < 0 or RouteDrop.DropY < 0 then reason = "Tentukan Drop Point terlebih dahulu"
             elseif type(Refs.Hud) ~= "table" or type(rawget(Refs.Hud, "onDrop")) ~= "function" then reason = "Fungsi drop game belum tersedia"
             elseif State.Running or Clear.Running or Farmer.Running or Pabrik.Running or Build.Running then reason = "Hentikan aktivitas farming lain terlebih dahulu"
@@ -9306,7 +9361,7 @@ do (function()
             RouteDrop.Status = "Memulai tracking dari baris paling atas (kanan ke kiri)"
             routeDropLog(("START BERHASIL: target=%s [%s], platform=%s [%s], drop=(%d,%d), world=%s, inv=%d"):format(
                 itemName(RouteDrop.TargetId), tostring(RouteDrop.TargetId),
-                itemName(RouteDrop.PlatformId), tostring(RouteDrop.PlatformId),
+                (RouteDrop.PlatformId and itemName(RouteDrop.PlatformId) or "semua block padat"), tostring(RouteDrop.PlatformId),
                 RouteDrop.DropX, RouteDrop.DropY, tostring(Guard.worldName()), invCount(RouteDrop.TargetId)), true)
             AutoDrop.On = false
             return true
@@ -9387,7 +9442,7 @@ do (function()
             local txt = table.concat({
                 RouteDrop.Status,
                 "Target: " .. (RouteDrop.TargetId and itemName(RouteDrop.TargetId) or "belum dipilih"),
-                "Pijakan: " .. (RouteDrop.PlatformId and itemName(RouteDrop.PlatformId) or "belum dipilih"),
+                "Pijakan: semua block padat" .. (RouteDrop.PlatformId and (" + " .. itemName(RouteDrop.PlatformId)) or ""),
                 "Arah: " .. RouteDrop.Direction,
                 "Drop Point: " .. dropPoint,
                 ("Terkumpul (kunjungan): %d | Ter-drop: %d"):format(RouteDrop.CollectedStops, RouteDrop.Dropped),
