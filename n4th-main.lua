@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-14-route-drop-fixed-face"
+Session.Build = "2026-11-14-break-center-stand2"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -5364,7 +5364,45 @@ local function clearLoop()
             for _, t in ipairs(band) do
                 if (t.x - band[1].x) * dir <= 4 then group[#group + 1] = t end
             end
-            travelGroup(sx, sy, group, R, useBlock, Clear.Skip, ClearFail)
+            -- Berdiri di TENGAH kelompok block (bukan di tepi) supaya semua block
+            -- di kiri-kanan masuk jangkauan pukul sekaligus.
+            local centered = false
+            do
+                local minx, maxx = math.huge, -math.huge
+                for _, t in ipairs(group) do
+                    if t.x < minx then minx = t.x end
+                    if t.x > maxx then maxx = t.x end
+                end
+                local midF = (minx + maxx) / 2
+                local mid = dir > 0 and floor(midF) or math.ceil(midF)
+                local Rp = punchReach() - 0.08
+                local bestX, bestN
+                for _, cxm in ipairs({ mid, mid - dir, mid + dir, mid - 2 * dir }) do
+                    local fake = { x = cxm + 0.5, y = sy + 0.975 }
+                    local n = 0
+                    for _, t in ipairs(group) do
+                        if stateReaches(fake, t.x, t.y, Rp) then n += 1 end
+                    end
+                    if n > 0 and (not bestN or n > bestN) then bestX, bestN = cxm, n end
+                end
+                Clear.Dbg = ("tengah: kolom %d-%d mid=%d pilih=%s kena=%s posisi=(%d,%d)"):format(
+                    minx, maxx, mid, tostring(bestX), tostring(bestN), sx, sy)
+                if bestX and not (sx == bestX) then
+                    local goal = { [sy * w.w + bestX] = true }
+                    local path = astar(sx, sy, goal, bestX, sy, 0.5, useBlock)
+                    if path and #path > 0 then
+                        setMoveStatus(("Berdiri di tengah kelompok block (%d,%d)"):format(bestX, sy))
+                        if followPath(path) then centered = true end
+                        releaseInput()
+                        Clear.Dbg = Clear.Dbg .. (centered and " -> sampai" or " -> jalan gagal")
+                    else
+                        Clear.Dbg = Clear.Dbg .. " -> tanpa jalan ke tengah"
+                    end
+                end
+            end
+            if not centered then
+                travelGroup(sx, sy, group, R, useBlock, Clear.Skip, ClearFail)
+            end
         end
     end
     releaseInput()
