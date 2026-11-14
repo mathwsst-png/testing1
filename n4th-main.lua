@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-14-fastpunch-x100"
+Session.Build = "2026-11-14-punch-detect2"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -2066,14 +2066,22 @@ local function isPunchFn(fn)
     local ok, consts = pcall(getconsts, fn)
     if not ok or type(consts) ~= "table" then return false end
     local hasVend, hasMark = false, false
+    local hasEvt, hasMiss, hasBuild, hasFg, hasBg = false, false, false, false, false
     for _, c in pairs(consts) do
         if type(c) == "string" then
             local lc = c:lower()
             if lc:find("vending", 1, true) and (lc:find("empty", 1, true) or lc:find("first", 1, true)) then hasVend = true
             elseif c == "newCrack" or c == "HarvestProvider" or lc:find("crack", 1, true) then hasMark = true end
+            if c == "punchEvent" then hasEvt = true
+            elseif c == "punch_miss" then hasMiss = true
+            elseif c == "mayBuild" then hasBuild = true
+            elseif c == "fg" then hasFg = true
+            elseif c == "bg" then hasBg = true end
         end
     end
-    return hasVend and hasMark
+    if hasVend and hasMark then return true end
+    -- Game versi baru: teks vending berubah. Fungsi pukul dikenali dari event pukul + cek izin build.
+    return hasEvt and hasMiss and hasBuild and hasFg and hasBg
 end
 
 -- Fungsi game yang menggambar tangan karakter saat memukul / memasang
