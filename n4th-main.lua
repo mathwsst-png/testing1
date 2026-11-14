@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-15-auto-place-loop-respawn-ui3"
+Session.Build = "2026-11-15-auto-place-loop-respawn-ui4"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -6635,7 +6635,7 @@ function AutoPlace.clickGui(o)
                 end
             end
         end
-        if fired then return true end
+        if fired then return true, "koneksi" end
     end
     local okV = pcall(function()
         local vim = game:GetService("VirtualInputManager")
@@ -6647,7 +6647,7 @@ function AutoPlace.clickGui(o)
         task.wait(0.06)
         vim:SendMouseButtonEvent(pos.X, y, 0, false, game, 0)
     end)
-    return okV
+    return okV, "mouse"
 end
 
 -- buka menu (kalau perlu) lalu tekan "Respawn". true kalau tombolnya ketemu & ditekan
@@ -6688,30 +6688,49 @@ end
 function AutoPlace.scanUI()
     local out = {}
     local function path(o) return o:GetFullName():gsub("^Players%.[^%.]+%.", "") end
-    local btn, vis = AutoPlace.findRespawn()
-    out[#out + 1] = btn and ("Respawn: %s [%s] terlihat=%s"):format(path(btn), btn.ClassName, tostring(vis))
-        or "Respawn: TIDAK ketemu di PlayerGui (buka menu dulu lalu scan lagi)"
-    for _, c in ipairs(AutoPlace.menuCandidates()) do
-        out[#out + 1] = ("Kandidat menu: %s [%s] pos=%d,%d size=%dx%d"):format(path(c), c.ClassName,
-            c.AbsolutePosition.X, c.AbsolutePosition.Y, c.AbsoluteSize.X, c.AbsoluteSize.Y)
-    end
-    -- isi UI yang sedang tampil (menu terbuka): semua tombol/label berteks di luar chat & peta tile
-    local n = 0
-    for _, o in ipairs(PlayerGui:GetDescendants()) do
-        if n >= 120 then out[#out + 1] = "... dipotong 120 baris" break end
-        if o:IsA("GuiObject") and not o:FindFirstAncestor("ChatGui") and not o:FindFirstAncestor("Tiles")
-            and not o:FindFirstAncestor("PlayerView") and AutoPlace.guiVisible(o) then
-            local t
-            if o:IsA("TextButton") or o:IsA("TextLabel") then
-                local okT, tv = pcall(function() return o.Text end)
-                if okT and tv ~= "" then t = tv end
-            end
-            if t or o:IsA("GuiButton") then
-                n += 1
-                out[#out + 1] = ("UI: %s [%s]%s"):format(path(o), o.ClassName, t and (' "' .. t .. '"') or "")
+    -- semua GuiObject yang terlihat (di luar chat & peta tile) sebagai himpunan
+    local function snapshot()
+        local set = {}
+        for _, o in ipairs(PlayerGui:GetDescendants()) do
+            if o:IsA("GuiObject") and not o:FindFirstAncestor("ChatGui") and not o:FindFirstAncestor("Tiles")
+                and not o:FindFirstAncestor("PlayerView") and AutoPlace.guiVisible(o) then
+                set[o] = true
             end
         end
+        return set
     end
+    local before = snapshot()
+    local mb = AutoPlace.menuCandidates()[1]
+    local ok, how = false, "-"
+    if mb then
+        ok, how = AutoPlace.clickGui(mb)
+        task.wait(0.8)
+    end
+    out[#out + 1] = ("Klik MenuButton: %s via %s"):format(tostring(ok), tostring(how))
+    local btn, vis = AutoPlace.findRespawn()
+    out[#out + 1] = btn and ("Respawn: %s [%s] terlihat=%s"):format(path(btn), btn.ClassName, tostring(vis))
+        or "Respawn: TIDAK ketemu lewat teks/nama"
+    -- elemen yang BARU muncul setelah menu dibuka = isi menu
+    local n = 0
+    for o in pairs(snapshot()) do
+        if not before[o] then
+            if n >= 150 then out[#out + 1] = "... dipotong 150 baris" break end
+            n += 1
+            local extra = ""
+            if o:IsA("TextButton") or o:IsA("TextLabel") then
+                local okT, tv = pcall(function() return o.Text end)
+                if okT and tv ~= "" then extra = ' "' .. tv .. '"' end
+            elseif o:IsA("ImageButton") or o:IsA("ImageLabel") then
+                local okI, iv = pcall(function() return o.Image end)
+                if okI and iv ~= "" then extra = " img=" .. tostring(iv):sub(1, 40) end
+            end
+            out[#out + 1] = ("BARU: %s [%s]%s pos=%d,%d size=%dx%d"):format(path(o), o.ClassName, extra,
+                o.AbsolutePosition.X, o.AbsolutePosition.Y, o.AbsoluteSize.X, o.AbsoluteSize.Y)
+        end
+    end
+    if n == 0 then out[#out + 1] = "Tidak ada elemen baru setelah klik: menu tidak terbuka lewat klik ini" end
+    -- tutup lagi supaya tidak menghalangi
+    if mb and n > 0 then AutoPlace.clickGui(mb) end
     local text = table.concat(out, "\n")
     print(text)
     local clip = setclipboard or toclipboard or (syn and syn.write_clipboard)
@@ -10020,7 +10039,7 @@ do
     safe(function()
         ctl:Button({
             Title = "Scan UI Respawn (salin ke clipboard)",
-            Desc = "Kirim hasilnya ke saya supaya bisa dicocokkan. Boleh dengan menu Respawn terbuka",
+            Desc = "Membuka menu pojok kanan atas sendiri, mencatat isinya, lalu menutupnya. Jalankan dengan menu tertutup, kirim hasilnya ke saya",
             Callback = function()
                 task.spawn(function()
                     AutoPlace.scanUI()
