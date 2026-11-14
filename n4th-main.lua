@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-15-auto-place-loop-respawn-ui4"
+Session.Build = "2026-11-15-auto-place-loop-respawn-ui5"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -6578,6 +6578,22 @@ end
 
 -- cari tombol/label ber-teks persis "Respawn" (abaikan chat). Return objek, terlihat?
 function AutoPlace.findRespawn()
+    -- Menu game: MenuGui.Menu.Fade.Area.Panel berisi TextButton berurutan dari atas:
+    -- Exit World, Respawn, Options, Store, Support, Logout, Daily Quests, Back (teksnya gambar, bukan Text)
+    local node = PlayerGui
+    for _, nm in ipairs({ "MenuGui", "Menu", "Fade", "Area", "Panel" }) do
+        node = node and node:FindFirstChild(nm)
+    end
+    if node then
+        local list = {}
+        for _, o in ipairs(node:GetDescendants()) do
+            if o:IsA("TextButton") then list[#list + 1] = o end
+        end
+        table.sort(list, function(a, b) return a.AbsolutePosition.Y < b.AbsolutePosition.Y end)
+        if #list >= 4 and list[2] then
+            return list[2], AutoPlace.guiVisible(list[2])
+        end
+    end
     local hidden
     for _, o in ipairs(PlayerGui:GetDescendants()) do
         if o:IsA("GuiObject") and not o:FindFirstAncestor("ChatGui") then
@@ -6657,7 +6673,7 @@ function AutoPlace.respawnUI()
         for i, c in ipairs(AutoPlace.menuCandidates()) do
             if i > 4 then break end
             AutoPlace.clickGui(c)
-            task.wait(0.5)
+            task.wait(0.9) -- tunggu animasi buka menu
             btn, vis = AutoPlace.findRespawn()
             if vis then break end
         end
@@ -6668,7 +6684,16 @@ function AutoPlace.respawnUI()
         if c then AutoPlace.clickGui(c) end
         return false
     end
-    return AutoPlace.clickGui(btn)
+    local ok = AutoPlace.clickGui(btn)
+    task.wait(0.7)
+    -- kalau menu masih terbuka setelah Respawn, tutup (toggle) supaya tidak menghalangi
+    local mg = PlayerGui:FindFirstChild("MenuGui")
+    local menu = mg and mg:FindFirstChild("Menu")
+    if menu and AutoPlace.guiVisible(menu) then
+        local c = AutoPlace.menuCandidates()[1]
+        if c then AutoPlace.clickGui(c) end
+    end
+    return ok
 end
 
 function AutoPlace.respawn()
