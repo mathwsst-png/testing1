@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-14-punch-detect2"
+Session.Build = "2026-11-14-plant-ground-filter"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -863,6 +863,10 @@ local Farmer = {
     Running = false,
     Harvest = true,
     Plant = true,
+    GroundFilter = false, -- true = tanam hanya di atas Dirt / Wooden Platform (sesuai pilihan di bawah)
+    PlantDirt = true,     -- tanah: Dirt (termasuk Grass)
+    PlantWood = true,     -- pijakan: Wooden Platform
+    GroundCache = {},
     Collect = true,
     UseBlock = false,   -- taruh block kalau tidak ada jalan
     ScaffoldId = nil,
@@ -1868,6 +1872,7 @@ end
 Config.add("Clear", Clear, { "UseBlock", "ScaffoldId", "Collect", "Sweep" })
 Config.add("Farmer", Farmer, {
     "Harvest", "Plant", "Collect", "UseBlock", "ScaffoldId", "HarvestMs", "PlantMs", "SeedId", "Focus", "Tractor",
+    "GroundFilter", "PlantDirt", "PlantWood",
 })
 -- update 1084: game memberi jeda minimal antar aksi (place ~0.135 dtk, pukul ~0.19 dtk)
 State.PlaceMs = math.max(State.PlaceMs, 140)
@@ -5828,6 +5833,7 @@ local function farmerCfg()
         plantSet = nil,  -- [idx] = true: hanya tanam di tile ini
         exclude = nil,   -- [idx] = true: jangan tanam di tile ini
         row = Farmer.Row,        -- tanam rapi per baris
+        groundFilter = Farmer.GroundFilter, -- tanam hanya di atas Dirt / Wooden Platform
         collect = Farmer.Collect, -- ambil drop panen dulu sebelum lanjut
         status = function(t) Farmer.Status = t end,
         onHarvest = function(id)
@@ -5846,7 +5852,24 @@ local function fcHarvestOk(x, y)
     return FC.harvest and (not FC.area or FC.area(x, y))
 end
 
+-- Tanah yang boleh dipakai (Dirt / Wooden Platform), dikenali dari nama item
+local function groundOk(id)
+    local c = Farmer.GroundCache[id]
+    if c ~= nil then return c end
+    local n = tostring(itemName(id) or ""):lower()
+    c = (Farmer.PlantDirt and (n:find("dirt", 1, true) ~= nil or n:find("grass", 1, true) ~= nil))
+        or (Farmer.PlantWood and n:find("wooden platform", 1, true) ~= nil) or false
+    Farmer.GroundCache[id] = c
+    return c
+end
+
 local function fcPlantOk(idx)
+    if FC.groundFilter then
+        local w = Refs.World
+        if not w then return false end
+        local below = fgIdAt(idx % w.w, floor(idx / w.w) + 1)
+        if below == 0 or not groundOk(below) then return false end
+    end
     return (not FC.plantSet or FC.plantSet[idx]) and not (FC.exclude and FC.exclude[idx])
 end
 
@@ -9858,6 +9881,45 @@ safe(function()
         Desc = "Tanam di atas block yang kosong",
         Value = Farmer.Plant,
         Callback = function(on) Farmer.Plant = on end,
+    })
+end)
+
+safe(function()
+    Box.FarmerCtl:Toggle({
+        Title = "Tanam hanya di Dirt / Wooden Platform",
+        Desc = "Auto Plant hanya menanam di atas tanah (Dirt, termasuk Grass) dan Wooden Platform yang dipilih di bawah. Mati = tanam di atas block padat apa pun.",
+        Value = Farmer.GroundFilter,
+        Callback = function(on)
+            Farmer.GroundFilter = on and true or false
+            table.clear(Farmer.GroundCache)
+            table.clear(Farmer.Skip)
+        end,
+    })
+end)
+
+safe(function()
+    Box.FarmerCtl:Toggle({
+        Title = "Pijakan tanam: Dirt",
+        Desc = "Tanah Dirt dan Grass dipakai sebagai tempat tanam (aktif saat filter di atas hidup)",
+        Value = Farmer.PlantDirt,
+        Callback = function(on)
+            Farmer.PlantDirt = on and true or false
+            table.clear(Farmer.GroundCache)
+            table.clear(Farmer.Skip)
+        end,
+    })
+end)
+
+safe(function()
+    Box.FarmerCtl:Toggle({
+        Title = "Pijakan tanam: Wooden Platform",
+        Desc = "Wooden Platform dipakai sebagai tempat tanam (aktif saat filter di atas hidup)",
+        Value = Farmer.PlantWood,
+        Callback = function(on)
+            Farmer.PlantWood = on and true or false
+            table.clear(Farmer.GroundCache)
+            table.clear(Farmer.Skip)
+        end,
     })
 end)
 
