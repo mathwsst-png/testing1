@@ -6566,6 +6566,15 @@ end
 local stopPlace
 
 -- ===== Respawn lewat UI game: menu pojok kanan atas -> tombol "Respawn" =====
+-- Aturan keselamatan (tombol "Exit World" persis di atas "Respawn"):
+--   1. Hanya tombol menu yang TERLIHAT yang dihitung. Tombol tersembunyi / template menggeser urutan.
+--   2. Menu harus diam (posisi tombol tidak berubah) dan jumlahnya pas (MenuButtons). Kalau tidak: batal,
+--      jangan menebak.
+--   3. Tombol menu pojok kanan atas adalah TOGGLE. Hanya diklik kalau menu terbukti tertutup,
+--      dan hanya SEKALI per percobaan (klik kedua = menutup lagi).
+AutoPlace.MenuButtons = 8   -- Exit World, Respawn, Options, Store, Support, Logout, Daily Quests, Back
+AutoPlace.RespawnIndex = 2  -- urutan dari atas: Respawn = tombol ke-2
+
 function AutoPlace.guiVisible(o)
     local cur = o
     while cur and cur ~= PlayerGui do
@@ -6576,42 +6585,55 @@ function AutoPlace.guiVisible(o)
     return o.AbsoluteSize.X > 0 and o.AbsoluteSize.Y > 0
 end
 
--- cari tombol/label ber-teks persis "Respawn" (abaikan chat). Return objek, terlihat?
-function AutoPlace.findRespawn()
-    -- Menu game: MenuGui.Menu.Fade.Area.Panel berisi TextButton berurutan dari atas:
-    -- Exit World, Respawn, Options, Store, Support, Logout, Daily Quests, Back (teksnya gambar, bukan Text)
+function AutoPlace.menuPanel()
     local node = PlayerGui
     for _, nm in ipairs({ "MenuGui", "Menu", "Fade", "Area", "Panel" }) do
         node = node and node:FindFirstChild(nm)
     end
-    if node then
-        local list = {}
-        for _, o in ipairs(node:GetDescendants()) do
-            if o:IsA("TextButton") then list[#list + 1] = o end
+    return node
+end
+
+-- tombol menu yang terlihat, urut dari atas ke bawah
+function AutoPlace.visibleMenuButtons()
+    local list, panel = {}, AutoPlace.menuPanel()
+    if not panel then return list end
+    for _, o in ipairs(panel:GetDescendants()) do
+        if o:IsA("TextButton") and AutoPlace.guiVisible(o) then list[#list + 1] = o end
+    end
+    table.sort(list, function(a, b)
+        local ay, by = a.AbsolutePosition.Y, b.AbsolutePosition.Y
+        if ay ~= by then return ay < by end
+        return a.AbsolutePosition.X < b.AbsolutePosition.X
+    end)
+    return list
+end
+
+-- menu terbuka DAN diam. Hasil: daftar tombol, atau nil + alasan ("tertutup" kalau memang tertutup)
+function AutoPlace.settledMenu()
+    local a = AutoPlace.visibleMenuButtons()
+    if #a == 0 then return nil, "tertutup" end
+    task.wait(0.15)
+    local b = AutoPlace.visibleMenuButtons()
+    if #a ~= #b then return nil, "masih beranimasi" end
+    for i = 1, #b do
+        if a[i] ~= b[i] or (a[i].AbsolutePosition - b[i].AbsolutePosition).Magnitude > 0.5 then
+            return nil, "masih beranimasi"
         end
-        table.sort(list, function(a, b) return a.AbsolutePosition.Y < b.AbsolutePosition.Y end)
-        if #list >= 4 and list[2] then
-            return list[2], AutoPlace.guiVisible(list[2])
+        if i > 1 and b[i].AbsolutePosition.Y - b[i - 1].AbsolutePosition.Y < 20 then
+            return nil, "posisi tombol tumpang tindih"
         end
     end
-    local hidden
-    for _, o in ipairs(PlayerGui:GetDescendants()) do
-        if o:IsA("GuiObject") and not o:FindFirstAncestor("ChatGui") then
-            local t = ""
-            if o:IsA("TextButton") or o:IsA("TextLabel") then
-                local okT, tv = pcall(function() return o.Text end)
-                if okT and type(tv) == "string" then t = tv end
-            end
-            local hit = t:gsub("%s+", ""):lower() == "respawn"
-            -- menu bisa memakai ImageButton / Frame bernama Respawn (teks digambar atau di label anak)
-            if not hit and (o:IsA("GuiButton") or o:IsA("TextLabel")) and o.Name:lower():find("respawn", 1, true) then hit = true end
-            if hit then
-                if AutoPlace.guiVisible(o) then return o, true end
-                hidden = hidden or o
-            end
-        end
+    if #b ~= AutoPlace.MenuButtons then
+        return nil, ("jumlah tombol menu %d (seharusnya %d)"):format(#b, AutoPlace.MenuButtons)
     end
-    return hidden, false
+    return b
+end
+
+-- dipakai Scan UI / pengecekan cepat: tombol Respawn kalau menu terbuka & jumlahnya pas
+function AutoPlace.findRespawn()
+    local list = AutoPlace.visibleMenuButtons()
+    if #list == AutoPlace.MenuButtons then return list[AutoPlace.RespawnIndex], true end
+    return nil, false
 end
 
 -- tombol kecil di pojok kanan atas layar (kandidat pembuka menu), terbesar dulu
@@ -6635,18 +6657,24 @@ function AutoPlace.menuCandidates()
     return list
 end
 
--- tekan elemen UI: sinyal tombol dulu (kalau ada koneksinya), kalau tidak klik mouse di tengahnya
+-- tekan elemen UI: sinyal tombol dulu (kalau ada koneksinya), kalau tidak klik mouse di tengahnya.
+-- Handler yang sama yang tersambung ke beberapa sinyal hanya dijalankan SEKALI
+-- (Activated + MouseButton1Click ke fungsi yang sama tidak boleh menekan tombol dua kali).
 function AutoPlace.clickGui(o)
     local target = o:IsA("GuiButton") and o or (o:FindFirstAncestorWhichIsA("GuiButton") or o)
     if type(getconnections) == "function" then
-        local fired = false
+        local fired, seenFn = false, {}
         for _, sigName in ipairs({ "Activated", "MouseButton1Click", "MouseButton1Down", "MouseButton1Up" }) do
             local okS, sig = pcall(function() return target[sigName] end)
             if okS and sig then
                 local okC, conns = pcall(getconnections, sig)
                 if okC and type(conns) == "table" then
                     for _, c in ipairs(conns) do
-                        if pcall(function() c:Fire() end) then fired = true end
+                        local okF, fn = pcall(Session.connectionFunction, c)
+                        if not (okF and fn and seenFn[fn]) then
+                            if okF and fn then seenFn[fn] = true end
+                            if pcall(function() c:Fire() end) then fired = true end
+                        end
                     end
                 end
             end
@@ -6657,7 +6685,7 @@ function AutoPlace.clickGui(o)
         local vim = game:GetService("VirtualInputManager")
         local inset = game:GetService("GuiService"):GetGuiInset()
         local sg = target:FindFirstAncestorWhichIsA("ScreenGui")
-        local pos = target.AbsolutePosition + target.AbsoluteSize / 2
+        local pos = target.AbsolutePosition + target.AbsoluteSize / 2 -- dibaca sekarang, bukan dari cache
         local y = pos.Y + ((sg and sg.IgnoreGuiInset) and 0 or inset.Y)
         vim:SendMouseButtonEvent(pos.X, y, 0, true, game, 0)
         task.wait(0.06)
@@ -6666,32 +6694,56 @@ function AutoPlace.clickGui(o)
     return okV, "mouse"
 end
 
--- buka menu (kalau perlu) lalu tekan "Respawn". true kalau tombolnya ketemu & ditekan
-function AutoPlace.respawnUI()
-    local btn, vis = AutoPlace.findRespawn()
-    if not vis then
-        for i, c in ipairs(AutoPlace.menuCandidates()) do
-            if i > 4 then break end
-            AutoPlace.clickGui(c)
-            task.wait(0.9) -- tunggu animasi buka menu
-            btn, vis = AutoPlace.findRespawn()
-            if vis then break end
+-- pastikan menu terbuka & diam. Hasil: daftar tombol, atau nil + alasan
+function AutoPlace.openMenu()
+    local list, why = AutoPlace.settledMenu()
+    if list then return list end
+    if why ~= "tertutup" then
+        -- sudah terbuka tapi belum diam / tidak cocok: tunggu tanpa klik apa pun
+        local t0 = os.clock()
+        while os.clock() - t0 < 3 do
+            task.wait(0.1)
+            list, why = AutoPlace.settledMenu()
+            if list then return list end
+            if why == "tertutup" then break end
         end
+        if why ~= "tertutup" then return nil, why end
     end
-    if not btn then
-        -- menu sudah terbuka tapi tombol Respawn tidak ketemu: tutup lagi (toggle) agar tidak menghalangi
-        local c = AutoPlace.menuCandidates()[1]
-        if c then AutoPlace.clickGui(c) end
+    -- menu tertutup: klik tombol menu SEKALI lalu tunggu sampai terbuka & diam
+    local mb = AutoPlace.menuCandidates()[1]
+    if not mb then return nil, "tombol menu pojok kanan atas tidak ketemu" end
+    AutoPlace.clickGui(mb)
+    local t0 = os.clock()
+    while os.clock() - t0 < 4 do
+        task.wait(0.15)
+        list, why = AutoPlace.settledMenu()
+        if list then return list end
+    end
+    return nil, why or "menu tidak terbuka"
+end
+
+-- buka menu (kalau perlu) lalu tekan "Respawn". true kalau tombolnya ditekan
+function AutoPlace.respawnUI()
+    local list, why = AutoPlace.openMenu()
+    if not list then
+        AutoPlace.RespawnWhy = why
+        warn("[n4th] Respawn dibatalkan: " .. tostring(why))
         return false
     end
+    local btn = list[AutoPlace.RespawnIndex]
     local ok = AutoPlace.clickGui(btn)
-    task.wait(0.7)
-    -- kalau menu masih terbuka setelah Respawn, tutup (toggle) supaya tidak menghalangi
-    local mg = PlayerGui:FindFirstChild("MenuGui")
-    local menu = mg and mg:FindFirstChild("Menu")
-    if menu and AutoPlace.guiVisible(menu) then
-        local c = AutoPlace.menuCandidates()[1]
-        if c then AutoPlace.clickGui(c) end
+    -- tutup menu hanya kalau MASIH terbuka & diam, dan hanya sekali
+    -- (menu yang sedang animasi menutup jangan di-toggle: itu malah membukanya lagi)
+    local t0 = os.clock()
+    while os.clock() - t0 < 2.5 do
+        task.wait(0.2)
+        local open, w = AutoPlace.settledMenu()
+        if w == "tertutup" then break end
+        if open then
+            local mb = AutoPlace.menuCandidates()[1]
+            if mb then AutoPlace.clickGui(mb) end
+            break
+        end
     end
     return ok
 end
@@ -6724,14 +6776,24 @@ function AutoPlace.scanUI()
         end
         return set
     end
+    local wasOpen = #AutoPlace.visibleMenuButtons() > 0
     local before = snapshot()
     local mb = AutoPlace.menuCandidates()[1]
     local ok, how = false, "-"
-    if mb then
+    if mb and not wasOpen then
         ok, how = AutoPlace.clickGui(mb)
-        task.wait(0.8)
+        task.wait(1.2)
     end
+    out[#out + 1] = ("Menu sudah terbuka sebelum scan: %s (kalau ya, MenuButton TIDAK diklik supaya tidak menutupnya)"):format(tostring(wasOpen))
     out[#out + 1] = ("Klik MenuButton: %s via %s"):format(tostring(ok), tostring(how))
+    do -- urutan tombol menu yang terlihat (Respawn harus nomor 2)
+        local vb = AutoPlace.visibleMenuButtons()
+        out[#out + 1] = ("Tombol menu terlihat: %d (diharapkan %d)"):format(#vb, AutoPlace.MenuButtons)
+        for i, b in ipairs(vb) do
+            out[#out + 1] = ("  #%d y=%d x=%d size=%dx%d layout=%s parent=%s"):format(i, b.AbsolutePosition.Y,
+                b.AbsolutePosition.X, b.AbsoluteSize.X, b.AbsoluteSize.Y, tostring(b.LayoutOrder), b.Parent and b.Parent.Name or "-")
+        end
+    end
     local btn, vis = AutoPlace.findRespawn()
     out[#out + 1] = btn and ("Respawn: %s [%s] terlihat=%s"):format(path(btn), btn.ClassName, tostring(vis))
         or "Respawn: TIDAK ketemu lewat teks/nama"
@@ -6755,7 +6817,7 @@ function AutoPlace.scanUI()
     end
     if n == 0 then out[#out + 1] = "Tidak ada elemen baru setelah klik: menu tidak terbuka lewat klik ini" end
     -- tutup lagi supaya tidak menghalangi
-    if mb and n > 0 then AutoPlace.clickGui(mb) end
+    if mb and n > 0 and not wasOpen then AutoPlace.clickGui(mb) end
     local text = table.concat(out, "\n")
     print(text)
     local clip = setclipboard or toclipboard or (syn and syn.write_clipboard)
