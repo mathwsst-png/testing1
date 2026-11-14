@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-14-break-center-stand2"
+Session.Build = "2026-11-14-fastpunch-x100"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -2595,10 +2595,10 @@ function Session.FastPunch.install()
                     break
                 end
                 FP.Key = job.key
-                for _ = 2, math.clamp(st.FastPunchHits or 12, 2, 40) do
+                for _ = 2, math.clamp(st.FastPunchHits or 12, 2, 100) do
                     -- pacing global: jarak antar SEMUA pukulan (punyamu + burst) >= jeda,
                     -- supaya tidak saling bertabrakan dan ditolak server
-                    local gap = math.max(st.FastPunchMs or 190, 50) / 1000
+                    local gap = math.max(st.FastPunchMs or 190, 10) / 1000
                     while os.clock() - (FP.Last or 0) < gap and FP.alive() and st.FastPunch do
                         task.wait()
                     end
@@ -5176,7 +5176,7 @@ local function clearBreakTile(t)
     local hits, maxHits = 0, hitsNeeded(id) * 3 + 6
     -- Auto Break Block (target 1 jenis): multi-hit beruntun sampai hancur, jeda = slider Fast Punch;
     -- tile yang terlewat dicoba lagi cepat (bukan dilewati lama)
-    local pace = Clear.TargetId and math.max(State.FastPunchMs or 190, 50) or nil
+    local pace = Clear.TargetId and math.max(State.FastPunchMs or 190, 10) or nil
     while Clear.Running and alive() do
         if Clear.TargetId and raymanOn() then
             stopClear("Lepas Rayman's Fist dulu agar block lain tidak ikut terkena.")
@@ -9156,14 +9156,14 @@ safe(function()
 end)
 addNumber(Box.FastPunch, {
     Title = "Jumlah Hit",
-    Desc = "Maks pukulan per block; berhenti otomatis begitu block hancur (default 12)",
-    Min = 2, Max = 40, Step = 1, Default = State.FastPunchHits,
+    Desc = "Maks pukulan per block (sampai x100); berhenti otomatis begitu block hancur (default 12)",
+    Min = 2, Max = 100, Step = 1, Default = State.FastPunchHits,
     Callback = function(v) State.FastPunchHits = math.floor(v) end,
 })
 addNumber(Box.FastPunch, {
     Title = "Jeda antar Hit (ms)",
-    Desc = "Default 190 = batas server (~0,19 dtk). Turunkan pelan-pelan (170, 150, ...) selama block tetap hancur",
-    Min = 50, Max = 400, Step = 5, Default = State.FastPunchMs,
+    Desc = "Default 190 = batas server (~0,19 dtk). Bisa diturunkan sampai 10 ms; turunkan pelan-pelan selama block tetap hancur (terlalu rendah bisa ditolak server)",
+    Min = 10, Max = 400, Step = 5, Default = State.FastPunchMs,
     Callback = function(v) State.FastPunchMs = math.floor(v) end,
 })
 if State.FastPunch then safe(function() pcall(Session.FastPunch.install) end) end
