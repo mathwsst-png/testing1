@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-15-auto-place-loop-respawn-ui2"
+Session.Build = "2026-11-15-auto-place-loop-respawn-ui3"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -6580,10 +6580,16 @@ end
 function AutoPlace.findRespawn()
     local hidden
     for _, o in ipairs(PlayerGui:GetDescendants()) do
-        if o:IsA("TextButton") or o:IsA("TextLabel") then
-            local okT, t = pcall(function() return o.Text end)
-            if okT and type(t) == "string" and t:gsub("%s+", ""):lower() == "respawn"
-                and not o:FindFirstAncestor("ChatGui") then
+        if o:IsA("GuiObject") and not o:FindFirstAncestor("ChatGui") then
+            local t = ""
+            if o:IsA("TextButton") or o:IsA("TextLabel") then
+                local okT, tv = pcall(function() return o.Text end)
+                if okT and type(tv) == "string" then t = tv end
+            end
+            local hit = t:gsub("%s+", ""):lower() == "respawn"
+            -- menu bisa memakai ImageButton / Frame bernama Respawn (teks digambar atau di label anak)
+            if not hit and (o:IsA("GuiButton") or o:IsA("TextLabel")) and o.Name:lower():find("respawn", 1, true) then hit = true end
+            if hit then
                 if AutoPlace.guiVisible(o) then return o, true end
                 hidden = hidden or o
             end
@@ -6688,6 +6694,23 @@ function AutoPlace.scanUI()
     for _, c in ipairs(AutoPlace.menuCandidates()) do
         out[#out + 1] = ("Kandidat menu: %s [%s] pos=%d,%d size=%dx%d"):format(path(c), c.ClassName,
             c.AbsolutePosition.X, c.AbsolutePosition.Y, c.AbsoluteSize.X, c.AbsoluteSize.Y)
+    end
+    -- isi UI yang sedang tampil (menu terbuka): semua tombol/label berteks di luar chat & peta tile
+    local n = 0
+    for _, o in ipairs(PlayerGui:GetDescendants()) do
+        if n >= 120 then out[#out + 1] = "... dipotong 120 baris" break end
+        if o:IsA("GuiObject") and not o:FindFirstAncestor("ChatGui") and not o:FindFirstAncestor("Tiles")
+            and not o:FindFirstAncestor("PlayerView") and AutoPlace.guiVisible(o) then
+            local t
+            if o:IsA("TextButton") or o:IsA("TextLabel") then
+                local okT, tv = pcall(function() return o.Text end)
+                if okT and tv ~= "" then t = tv end
+            end
+            if t or o:IsA("GuiButton") then
+                n += 1
+                out[#out + 1] = ("UI: %s [%s]%s"):format(path(o), o.ClassName, t and (' "' .. t .. '"') or "")
+            end
+        end
     end
     local text = table.concat(out, "\n")
     print(text)
