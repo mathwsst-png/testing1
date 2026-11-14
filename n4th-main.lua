@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-15-auto-place-loop-respawn-ui"
+Session.Build = "2026-11-15-auto-place-loop-respawn-ui2"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -6605,6 +6605,10 @@ function AutoPlace.menuCandidates()
             end
         end
     end
+    -- MenuGui.SideButtons.MenuButton (hasil scan) selalu paling depan; FriendButton jangan dicoba
+    local menu = PlayerGui:FindFirstChild("MenuGui")
+    local mb = menu and menu:FindFirstChild("SideButtons") and menu.SideButtons:FindFirstChild("MenuButton")
+    if mb and mb:IsA("GuiButton") then return { mb } end
     table.sort(list, function(a, b) return a.AbsoluteSize.X * a.AbsoluteSize.Y > b.AbsoluteSize.X * b.AbsoluteSize.Y end)
     return list
 end
@@ -6652,7 +6656,12 @@ function AutoPlace.respawnUI()
             if vis then break end
         end
     end
-    if not btn then return false end
+    if not btn then
+        -- menu sudah terbuka tapi tombol Respawn tidak ketemu: tutup lagi (toggle) agar tidak menghalangi
+        local c = AutoPlace.menuCandidates()[1]
+        if c then AutoPlace.clickGui(c) end
+        return false
+    end
     return AutoPlace.clickGui(btn)
 end
 
