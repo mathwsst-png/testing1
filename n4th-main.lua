@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-15-auto-place-area2"
+Session.Build = "2026-11-15-auto-place-loop-test"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -795,6 +795,8 @@ local AutoDrop = {
 -- Auto Place: isi semua tile kosong di dalam area (Huge Lock / area yang boleh dibangun)
 local AutoPlace = {
     Running = false,
+    Loop = true,            -- block habis / area penuh: tunggu & lanjut, tidak berhenti
+    RespawnOnEmpty = false, -- block habis: matikan karakter agar respawn
     BlockId = nil,
     PlaceMs = 150,
     P1X = -1, P1Y = -1, P2X = -1, P2Y = -1, -- pojok area manual (opsional)
@@ -1877,7 +1879,7 @@ Config.add("Farm", State, {
     "CollectAround", "CollectRadius", "CollectMode", "FastPunch", "FastPunchHits", "FastPunchMs",
     "WorldBreakId", "WorldBreakCollect",
 })
-Config.add("AutoPlace", AutoPlace, { "BlockId", "PlaceMs", "P1X", "P1Y", "P2X", "P2Y" })
+Config.add("AutoPlace", AutoPlace, { "BlockId", "PlaceMs", "P1X", "P1Y", "P2X", "P2Y", "Loop", "RespawnOnEmpty" })
 Config.add("RouteDrop", RouteDrop, { "TargetId", "PlatformId", "DropX", "DropY", "DropFace", "Direction" })
 -- Pindahkan nilai default lama. Nilai yang dipilih di versi baru tetap berlaku.
 if (Config.Data.Version == nil or Config.Data.Version == 1) and State.AfterBreakMs == 300 then
@@ -6562,6 +6564,18 @@ local function apTravel(s, targets)
 end
 
 local stopPlace
+
+function AutoPlace.respawn()
+    local ch = LocalPlayer.Character
+    if not ch then return false end
+    local hum = ch:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum.Health = 0
+        return true
+    end
+    return (pcall(function() ch:BreakJoints() end))
+end
+
 local function placeLoop()
     local P = AutoPlace
     local lastUi, retry = 0, 0
@@ -6577,6 +6591,25 @@ local function placeLoop()
         if not s.grounded then continue end
         local id = P.BlockId
         if invCount(id) <= 0 then
+            if P.RespawnOnEmpty and os.clock() - (P.LastRespawn or 0) > 15 then
+                P.LastRespawn = os.clock()
+                P.Status = "Block habis, respawn..."
+                if Auto.updatePlaceStatus then Auto.updatePlaceStatus() end
+                releaseInput()
+                if not AutoPlace.respawn() then
+                    P.Status = "Respawn gagal (karakter / Humanoid tidak ketemu)"
+                    if Auto.updatePlaceStatus then Auto.updatePlaceStatus() end
+                end
+                task.wait(3)
+                continue
+            end
+            if P.Loop then
+                releaseInput()
+                if not P.RespawnOnEmpty then P.Status = "Block habis, menunggu block tersedia (loop aktif)..." end
+                if Auto.updatePlaceStatus then Auto.updatePlaceStatus() end
+                task.wait(1)
+                continue
+            end
             stopPlace("Block habis")
             return
         end
@@ -6588,7 +6621,14 @@ local function placeLoop()
             if Auto.updatePlaceStatus then Auto.updatePlaceStatus() end
         end
         if #P.List == 0 then
-            if skippedCount(P.Skip) > 0 and retry < 2 then
+            if P.Loop then
+                P.Status = "Area penuh, menunggu tile kosong (loop aktif)..."
+                if Auto.updatePlaceStatus then Auto.updatePlaceStatus() end
+                table.clear(P.Skip)
+                table.clear(APFail)
+                table.clear(P.Tries)
+                task.wait(2)
+            elseif skippedCount(P.Skip) > 0 and retry < 2 then
                 retry += 1
                 table.clear(P.Skip)
                 table.clear(APFail)
@@ -6642,7 +6682,7 @@ function AutoPlace.start()
         err = "Hentikan fitur farming lain dulu"
     end
     if not err and not P.BlockId then err = "Pilih block yang mau ditaruh" end
-    if not err and invCount(P.BlockId) <= 0 then err = "Block yang dipilih tidak ada di inventori" end
+    if not err and invCount(P.BlockId) <= 0 and not P.Loop then err = "Block yang dipilih tidak ada di inventori" end
     if err then
         notify("Auto Place", err, 4)
         if UI.PlaceToggle then pcall(function() UI.PlaceToggle:Set(false) end) end
@@ -9804,6 +9844,22 @@ do
         ctl:Button({
             Title = "Refresh daftar block",
             Callback = function() UI.later("invForce", function() doInvRefresh(true) end) end,
+        })
+    end)
+    safe(function()
+        ctl:Toggle({
+            Title = "Loop terus",
+            Desc = "Block habis / area penuh: tunggu dan lanjut otomatis, tidak berhenti",
+            Value = AutoPlace.Loop,
+            Callback = function(on) AutoPlace.Loop = on and true or false end,
+        })
+    end)
+    safe(function()
+        ctl:Toggle({
+            Title = "Respawn saat block habis",
+            Desc = "Karakter dimatikan lalu respawn, loop lanjut sendiri (jeda 15 dtk antar respawn). Butuh Loop terus aktif",
+            Value = AutoPlace.RespawnOnEmpty,
+            Callback = function(on) AutoPlace.RespawnOnEmpty = on and true or false end,
         })
     end)
     addNumber(ctl, {
