@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-14-auto-plant-tab"
+Session.Build = "2026-11-14-auto-plant-run"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -6175,6 +6175,107 @@ function Farmer.dropList()
     return out
 end
 
+-- Auto Plant (mode lari): jalan lurus menyusuri satu baris dan menanam semua tile yang
+-- terjangkau SAMBIL berjalan (tanpa berhenti per tile). Kalau seed habis, cari seed yang ter-drop.
+local function plantSweepStep()
+    local w = Refs.World
+    local s = playerState()
+    if not w or not s or s.dead then task.wait(0.3) return "wait" end
+    if not s.grounded then task.wait(0.05) return "wait" end
+    local function live() return Farmer.Running and Farmer.PlantOnly and alive() end
+
+    -- 1) Seed habis di backpack: cari seed yang ter-drop di world dan ambil
+    if fcSeeds() <= 0 then
+        local sid = FC.seed
+        if not sid then return "idle" end
+        Farmer.Status = "Seed habis: cari seed yang ter-drop..."
+        local n = Move.fetchDrops(live, 80, function(d) return d.id == sid end, 25)
+        releaseInput()
+        if n > 0 and fcSeeds() > 0 then return "work" end
+        return "idle"
+    end
+
+    -- 2) Tentukan baris tanam (baris terkunci dulu, lalu terdekat), kumpulkan semua tile tanam di baris itu
+    local best = farmerScan(floor(s.x), floor(s.y - 0.475), 1)
+    local first = best[1]
+    if not first or first.kind ~= "plant" then return "idle" end
+    local rowY, W = first.y, w.w
+    local list, lo, hi = {}, math.huge, -math.huge
+    local now = os.clock()
+    for x = 0, W - 1 do
+        local idx = rowY * W + x
+        if fgIdAt(x, rowY) == 0 and fcPlantOk(idx) and not skipped(FC.skip, idx, now)
+            and plantSpotOk(x, rowY, FC.seed) then
+            list[#list + 1] = { x = x, y = rowY, idx = idx }
+            if x < lo then lo = x end
+            if x > hi then hi = x end
+        end
+    end
+    if #list == 0 then return "idle" end
+
+    -- 3) Penanam berjalan paralel dengan gerakan: tiap tile yang masuk jangkauan langsung ditanam
+    local R = farmReach() - 0.08
+    local active, doneSet, planted = true, {}, 0
+    task.spawn(function()
+        while active and live() do
+            local cur = playerState()
+            if cur and not cur.dead and fcSeeds() > 0 then
+                local bt, bd
+                for _, t in ipairs(list) do
+                    if not doneSet[t.idx] and stateReaches(cur, t.x, t.y, R) and fgIdAt(t.x, t.y) == 0 then
+                        local d = abs(t.x + 0.5 - cur.x)
+                        if not bd or d < bd then bt, bd = t, d end
+                    end
+                end
+                if bt then
+                    doneSet[bt.idx] = true
+                    if plantSeed(bt.x, bt.y) then planted += 1 end
+                    task.wait(math.max(FC.pms or 140, 140) / 1000)
+                else
+                    task.wait()
+                end
+            else
+                task.wait(0.05)
+            end
+        end
+    end)
+
+    -- 4) Lari: ke ujung terdekat dulu, lalu terus ke ujung lainnya (tanpa berhenti di tiap tile)
+    local sx0 = startNode(s)
+    local nearX, farX = lo, hi
+    if abs(sx0 - hi) < abs(sx0 - lo) then nearX, farX = hi, lo end
+    Farmer.Status = ("Lari tanam baris y %d: x %d -> %d (%d tempat)"):format(rowY, nearX, farX, #list)
+    Move.Homing = true
+    Move.HomingLive = function() return live() and fcSeeds() > 0 end
+    Move.HomingRoute = nil
+    autoBegin()
+    for _, tx in ipairs({ nearX, farX }) do
+        if not (live() and fcSeeds() > 0) then break end
+        local cur = playerState()
+        if not cur or cur.dead then break end
+        local cx, cy = startNode(cur)
+        if not (cx == tx and cy == rowY) then
+            local goal = { [rowY * W + tx] = true }
+            local path = astar(cx, cy, goal, tx, rowY, 0.5, false) or astar(cx, cy, goal, tx, rowY, 1.2, false)
+            if not path then break end
+            if #path > 0 and not followPath(path) then break end
+        end
+    end
+    Move.Homing = false
+    Move.HomingLive = nil
+    releaseInput()
+    autoEnd()
+    task.wait(math.max(FC.pms or 140, 140) / 1000 + 0.1) -- tile terakhir sempat ditanam
+    active = false
+
+    -- tile yang tidak sempat ditanam dilewati sebentar supaya tidak mengulang tanpa henti
+    for _, t in ipairs(list) do
+        if not doneSet[t.idx] then skipTile(FC.skip, t.idx, 20) end
+    end
+    if planted == 0 then skipTile(FC.skip, first.idx, 60) end
+    return "work"
+end
+
 local function farmerLoop()
     local lastUi = 0
     while Farmer.Running and alive() do
@@ -6207,7 +6308,8 @@ local function farmerLoop()
                 continue
             end
         end
-        local r, nextReady = fieldStep()
+        local r, nextReady
+        if Farmer.PlantOnly then r = plantSweepStep() else r, nextReady = fieldStep() end
         if r == "wait" and not playerState() then
             Farmer.Status = "Menunggu karakter / world..."
         end
@@ -6217,7 +6319,7 @@ local function farmerLoop()
                 parts[#parts + 1] = nextReady and ("pohon siap ±" .. math.ceil(nextReady) .. " dtk") or "tidak ada pohon"
             end
             if (Farmer.Plant or Farmer.PlantOnly) and not Farmer.Tractor then
-                parts[#parts + 1] = (seedCount() <= 0) and "seed habis / belum dipilih" or "tidak ada tempat tanam"
+                parts[#parts + 1] = (seedCount() <= 0) and "seed habis & tidak ada seed ter-drop" or "tidak ada tempat tanam"
             end
             Farmer.Status = "Menunggu: " .. table.concat(parts, ", ")
             if not waitAuto(1000) then break end
