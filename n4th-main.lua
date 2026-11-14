@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-15-auto-place-loop-test"
+Session.Build = "2026-11-15-auto-place-loop-respawn-ui"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -6565,7 +6565,100 @@ end
 
 local stopPlace
 
+-- ===== Respawn lewat UI game: menu pojok kanan atas -> tombol "Respawn" =====
+function AutoPlace.guiVisible(o)
+    local cur = o
+    while cur and cur ~= PlayerGui do
+        if cur:IsA("GuiObject") and not cur.Visible then return false end
+        if cur:IsA("ScreenGui") and not cur.Enabled then return false end
+        cur = cur.Parent
+    end
+    return o.AbsoluteSize.X > 0 and o.AbsoluteSize.Y > 0
+end
+
+-- cari tombol/label ber-teks persis "Respawn" (abaikan chat). Return objek, terlihat?
+function AutoPlace.findRespawn()
+    local hidden
+    for _, o in ipairs(PlayerGui:GetDescendants()) do
+        if o:IsA("TextButton") or o:IsA("TextLabel") then
+            local okT, t = pcall(function() return o.Text end)
+            if okT and type(t) == "string" and t:gsub("%s+", ""):lower() == "respawn"
+                and not o:FindFirstAncestor("ChatGui") then
+                if AutoPlace.guiVisible(o) then return o, true end
+                hidden = hidden or o
+            end
+        end
+    end
+    return hidden, false
+end
+
+-- tombol kecil di pojok kanan atas layar (kandidat pembuka menu), terbesar dulu
+function AutoPlace.menuCandidates()
+    local cam = workspace.CurrentCamera
+    local vp = cam and cam.ViewportSize or Vector2.new(1920, 1080)
+    local list = {}
+    for _, o in ipairs(PlayerGui:GetDescendants()) do
+        if o:IsA("GuiButton") and AutoPlace.guiVisible(o) and not o:FindFirstAncestor("ChatGui") then
+            local p, s = o.AbsolutePosition, o.AbsoluteSize
+            if p.X > vp.X * 0.8 and p.Y < vp.Y * 0.1 and s.X <= 140 and s.Y <= 140 then
+                list[#list + 1] = o
+            end
+        end
+    end
+    table.sort(list, function(a, b) return a.AbsoluteSize.X * a.AbsoluteSize.Y > b.AbsoluteSize.X * b.AbsoluteSize.Y end)
+    return list
+end
+
+-- tekan elemen UI: sinyal tombol dulu (kalau ada koneksinya), kalau tidak klik mouse di tengahnya
+function AutoPlace.clickGui(o)
+    local target = o:IsA("GuiButton") and o or (o:FindFirstAncestorWhichIsA("GuiButton") or o)
+    if type(getconnections) == "function" then
+        local fired = false
+        for _, sigName in ipairs({ "Activated", "MouseButton1Click", "MouseButton1Down", "MouseButton1Up" }) do
+            local okS, sig = pcall(function() return target[sigName] end)
+            if okS and sig then
+                local okC, conns = pcall(getconnections, sig)
+                if okC and type(conns) == "table" then
+                    for _, c in ipairs(conns) do
+                        if pcall(function() c:Fire() end) then fired = true end
+                    end
+                end
+            end
+        end
+        if fired then return true end
+    end
+    local okV = pcall(function()
+        local vim = game:GetService("VirtualInputManager")
+        local inset = game:GetService("GuiService"):GetGuiInset()
+        local sg = target:FindFirstAncestorWhichIsA("ScreenGui")
+        local pos = target.AbsolutePosition + target.AbsoluteSize / 2
+        local y = pos.Y + ((sg and sg.IgnoreGuiInset) and 0 or inset.Y)
+        vim:SendMouseButtonEvent(pos.X, y, 0, true, game, 0)
+        task.wait(0.06)
+        vim:SendMouseButtonEvent(pos.X, y, 0, false, game, 0)
+    end)
+    return okV
+end
+
+-- buka menu (kalau perlu) lalu tekan "Respawn". true kalau tombolnya ketemu & ditekan
+function AutoPlace.respawnUI()
+    local btn, vis = AutoPlace.findRespawn()
+    if not vis then
+        for i, c in ipairs(AutoPlace.menuCandidates()) do
+            if i > 4 then break end
+            AutoPlace.clickGui(c)
+            task.wait(0.5)
+            btn, vis = AutoPlace.findRespawn()
+            if vis then break end
+        end
+    end
+    if not btn then return false end
+    return AutoPlace.clickGui(btn)
+end
+
 function AutoPlace.respawn()
+    if AutoPlace.respawnUI() then return true end
+    -- cadangan: matikan karakter Roblox biasa (kalau game memakainya)
     local ch = LocalPlayer.Character
     if not ch then return false end
     local hum = ch:FindFirstChildOfClass("Humanoid")
@@ -6574,6 +6667,24 @@ function AutoPlace.respawn()
         return true
     end
     return (pcall(function() ch:BreakJoints() end))
+end
+
+-- dump UI untuk dicari manual: tombol Respawn + kandidat tombol menu pojok kanan atas
+function AutoPlace.scanUI()
+    local out = {}
+    local function path(o) return o:GetFullName():gsub("^Players%.[^%.]+%.", "") end
+    local btn, vis = AutoPlace.findRespawn()
+    out[#out + 1] = btn and ("Respawn: %s [%s] terlihat=%s"):format(path(btn), btn.ClassName, tostring(vis))
+        or "Respawn: TIDAK ketemu di PlayerGui (buka menu dulu lalu scan lagi)"
+    for _, c in ipairs(AutoPlace.menuCandidates()) do
+        out[#out + 1] = ("Kandidat menu: %s [%s] pos=%d,%d size=%dx%d"):format(path(c), c.ClassName,
+            c.AbsolutePosition.X, c.AbsolutePosition.Y, c.AbsoluteSize.X, c.AbsoluteSize.Y)
+    end
+    local text = table.concat(out, "\n")
+    print(text)
+    local clip = setclipboard or toclipboard or (syn and syn.write_clipboard)
+    if type(clip) == "function" then pcall(clip, text) end
+    return text
 end
 
 local function placeLoop()
@@ -6597,7 +6708,7 @@ local function placeLoop()
                 if Auto.updatePlaceStatus then Auto.updatePlaceStatus() end
                 releaseInput()
                 if not AutoPlace.respawn() then
-                    P.Status = "Respawn gagal (karakter / Humanoid tidak ketemu)"
+                    P.Status = "Respawn gagal (tombol Respawn di menu UI tidak ketemu)"
                     if Auto.updatePlaceStatus then Auto.updatePlaceStatus() end
                 end
                 task.wait(3)
@@ -9860,6 +9971,30 @@ do
             Desc = "Karakter dimatikan lalu respawn, loop lanjut sendiri (jeda 15 dtk antar respawn). Butuh Loop terus aktif",
             Value = AutoPlace.RespawnOnEmpty,
             Callback = function(on) AutoPlace.RespawnOnEmpty = on and true or false end,
+        })
+    end)
+    safe(function()
+        ctl:Button({
+            Title = "Tes Respawn (lewat menu UI)",
+            Desc = "Buka menu pojok kanan atas lalu tekan Respawn. Pastikan karakter sedang berdiri",
+            Callback = function()
+                task.spawn(function()
+                    local ok = AutoPlace.respawn()
+                    notify(ok and "Respawn ditekan" or "Respawn gagal", ok and "Cek apakah karakter respawn" or "Tombol Respawn tidak ketemu, pakai Scan UI", 4)
+                end)
+            end,
+        })
+    end)
+    safe(function()
+        ctl:Button({
+            Title = "Scan UI Respawn (salin ke clipboard)",
+            Desc = "Kirim hasilnya ke saya supaya bisa dicocokkan. Boleh dengan menu Respawn terbuka",
+            Callback = function()
+                task.spawn(function()
+                    AutoPlace.scanUI()
+                    notify("Scan UI selesai", "Hasil disalin ke clipboard dan dicetak di console", 4)
+                end)
+            end,
         })
     end)
     addNumber(ctl, {
