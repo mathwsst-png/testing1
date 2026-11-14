@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-14-auto-plant-run"
+Session.Build = "2026-11-15-auto-place-area"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -790,6 +790,18 @@ local AutoDrop = {
     Dropped = 0,
     Status = "Mati",
     Zones = {},
+}
+
+-- Auto Place: isi semua tile kosong di dalam area (Huge Lock / area yang boleh dibangun)
+local AutoPlace = {
+    Running = false,
+    BlockId = nil,
+    PlaceMs = 150,
+    P1X = -1, P1Y = -1, P2X = -1, P2Y = -1, -- pojok area manual (opsional)
+    Placed = 0,
+    Status = "Mati",
+    Allowed = nil, AllowedN = 0, Source = "-",
+    Skip = {}, Tries = {}, List = {},
 }
 
 -- Auto Route Drop: susuri drop item di atas platform, lalu drop tiap 200 item.
@@ -1865,6 +1877,7 @@ Config.add("Farm", State, {
     "CollectAround", "CollectRadius", "CollectMode", "FastPunch", "FastPunchHits", "FastPunchMs",
     "WorldBreakId", "WorldBreakCollect",
 })
+Config.add("AutoPlace", AutoPlace, { "BlockId", "PlaceMs", "P1X", "P1Y", "P2X", "P2Y" })
 Config.add("RouteDrop", RouteDrop, { "TargetId", "PlatformId", "DropX", "DropY", "DropFace", "Direction" })
 -- Pindahkan nilai default lama. Nilai yang dipilih di versi baru tetap berlaku.
 if (Config.Data.Version == nil or Config.Data.Version == 1) and State.AfterBreakMs == 300 then
@@ -2398,6 +2411,10 @@ local function doInvRefresh(force)
         lastInvSig = sig
         local labels = inventoryLabels(ids)
         UI.ddRefresh(UI.InvDropdown, labels)
+        if UI.APBlockDropdown then
+            UI.ddRefresh(UI.APBlockDropdown, labels)
+            selectSaved(UI.APBlockDropdown, labels, AutoPlace.BlockId)
+        end
         selectSaved(UI.InvDropdown, labels, State.SelectedId)
     end
     local sids = seedIds()
@@ -6388,6 +6405,288 @@ local function startFarmer()
 end
 
 ---------------------------------------------------------------------
+-- ===== AUTO PLACE: isi semua tile kosong di dalam area yang boleh dibangun =====
+-- Area = hasil deteksi otomatis (tile yang boleh dibangun dan saling tersambung dari posisi karakter,
+-- sama dengan area Huge Lock) atau kotak manual dari 2 pojok. Penaruh jalan paralel dengan gerakan,
+-- jadi block ditaruh sambil berjalan.
+local APFail = {}
+local function apLayer(id)
+    local it = ItemDB[id]
+    return (it and it.background) and "bg" or "fg"
+end
+
+function AutoPlace.buildArea()
+    local w = Refs.World
+    if not w then return nil, "world belum siap" end
+    local W, H = w.w, w.h
+    local P = AutoPlace
+    local set, n = {}, 0
+    if P.P1X >= 0 and P.P2X >= 0 then
+        local x1, x2 = math.min(P.P1X, P.P2X), math.max(P.P1X, P.P2X)
+        local y1, y2 = math.min(P.P1Y, P.P2Y), math.max(P.P1Y, P.P2Y)
+        for y = math.max(0, y1), math.min(H - 1, y2) do
+            for x = math.max(0, x1), math.min(W - 1, x2) do
+                if canWorkAt(x, y) then
+                    set[y * W + x] = true
+                    n += 1
+                end
+            end
+            task.wait()
+        end
+        return set, n, "manual"
+    end
+    local s = playerState()
+    if not s then return nil, "karakter belum terbaca" end
+    local sx, sy = startNode(s)
+    if not canWorkAt(sx, sy) then return nil, "posisimu di luar area yang boleh dibangun" end
+    local q, head = { sy * W + sx }, 1
+    set[sy * W + sx] = true
+    n = 1
+    local steps = 0
+    while head <= #q do
+        local idx = q[head]
+        head += 1
+        local x, y = idx % W, floor(idx / W)
+        for _, d in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
+            local nx, ny = x + d[1], y + d[2]
+            if nx >= 0 and ny >= 0 and nx < W and ny < H then
+                local ni = ny * W + nx
+                if not set[ni] and canWorkAt(nx, ny) then
+                    set[ni] = true
+                    n += 1
+                    q[#q + 1] = ni
+                end
+            end
+        end
+        steps += 1
+        if steps % 300 == 0 then task.wait() end
+    end
+    if n >= W * H * 0.85 then
+        return nil, "seluruh world bisa dibangun (area lock tidak terbaca). Tandai 2 pojok area secara manual"
+    end
+    return set, n, "otomatis"
+end
+
+local function apTargets()
+    local w = Refs.World
+    local P = AutoPlace
+    local id = P.BlockId
+    local out = {}
+    if not w or not id or not P.Allowed then return out end
+    local W = w.w
+    local layer = apLayer(id)
+    local now = os.clock()
+    local s = playerState()
+    local bx, by = s and floor(s.x), s and floor(s.y - 0.475)
+    for idx in pairs(P.Allowed) do
+        if not skipped(P.Skip, idx, now) then
+            local x, y = idx % W, floor(idx / W)
+            if tileAt(layer, x, y) == 0 and not (layer == "fg" and s and x == bx and (y == by or y == by - 1)) then
+                out[#out + 1] = { x = x, y = y, idx = idx }
+            end
+        end
+    end
+    table.sort(out, function(a, b)
+        if a.y ~= b.y then return a.y < b.y end
+        return a.x < b.x
+    end)
+    return out
+end
+
+local function apPlacer()
+    local P = AutoPlace
+    while P.Running and alive() do
+        local s = playerState()
+        local id = P.BlockId
+        if s and not s.dead and id and invCount(id) > 0 and #P.List > 0 then
+            local R = buildReach() - 0.08
+            local bt, bd
+            for _, t in ipairs(P.List) do
+                if stateReaches(s, t.x, t.y, R) then
+                    local d = abs(t.x + 0.5 - s.x) + abs(t.y + 0.5 - (s.y - 0.475))
+                    if not bd or d < bd then bt, bd = t, d end
+                end
+            end
+            if bt then
+                local layer = apLayer(id)
+                if tileAt(layer, bt.x, bt.y) == 0 then
+                    local tries = (P.Tries[bt.idx] or 0) + 1
+                    P.Tries[bt.idx] = tries
+                    if tries > 3 then
+                        skipTile(P.Skip, bt.idx, 60)
+                        P.Tries[bt.idx] = nil
+                    else
+                        sendSetTile(layer, bt.x, bt.y, id)
+                        if Refs.Inv then pcall(function() Refs.Inv:remove(id, 1) end) end
+                        P.Placed += 1
+                    end
+                end
+                task.wait(math.max(P.PlaceMs or 150, 140) / 1000)
+            else
+                task.wait(0.03)
+            end
+        else
+            task.wait(0.1)
+        end
+    end
+end
+
+local function apTravel(s, targets)
+    local w = Refs.World
+    local W = w.w
+    local t0 = targets[1]
+    local group, minx, maxx = {}, math.huge, -math.huge
+    for _, t in ipairs(targets) do
+        if t.y > t0.y + 1 then break end
+        if abs(t.x - t0.x) <= 4 then
+            group[#group + 1] = t
+            if t.x < minx then minx = t.x end
+            if t.x > maxx then maxx = t.x end
+        end
+    end
+    local R = buildReach() - 0.08
+    local sx, sy = startNode(s)
+    -- berdiri di tengah kelompok supaya semua tile masuk jangkauan sekaligus
+    local mid = floor((minx + maxx) / 2)
+    local bestX, bestN
+    for _, cx in ipairs({ mid, mid - 1, mid + 1, mid - 2, mid + 2 }) do
+        local fake = { x = cx + 0.5, y = sy + 0.975 }
+        local n = 0
+        for _, t in ipairs(group) do
+            if stateReaches(fake, t.x, t.y, R) then n += 1 end
+        end
+        if n > 0 and (not bestN or n > bestN) then bestX, bestN = cx, n end
+    end
+    if bestX and bestX ~= sx and abs(bestX - sx) <= 15 then
+        local goal = { [sy * W + bestX] = true }
+        local path = astar(sx, sy, goal, bestX, sy, 0.5, false)
+        if path and #path > 0 then
+            AutoPlace.Status = ("Jalan ke (%d,%d) untuk isi %d tile"):format(bestX, sy, #group)
+            if followPath(path) then
+                releaseInput()
+                return true
+            end
+            releaseInput()
+        end
+    end
+    -- cadangan: A* ke posisi pertama yang menjangkau kelompok
+    return travelGroup(sx, sy, group, buildReach() - 0.35, false, AutoPlace.Skip, APFail)
+end
+
+local stopPlace
+local function placeLoop()
+    local P = AutoPlace
+    local lastUi, retry = 0, 0
+    while P.Running and alive() do
+        task.wait(0.05)
+        local w = Refs.World
+        local s = playerState()
+        if not w or not s or s.dead then
+            P.Status = "Menunggu karakter / world..."
+            task.wait(0.5)
+            continue
+        end
+        if not s.grounded then continue end
+        local id = P.BlockId
+        if invCount(id) <= 0 then
+            stopPlace("Block habis")
+            return
+        end
+        P.List = apTargets()
+        if os.clock() - lastUi > 0.5 then
+            lastUi = os.clock()
+            P.Status = ("Isi area (%s): sisa %d tile | ditaruh %d | %s x%d"):format(
+                P.Source, #P.List, P.Placed, itemName(id), invCount(id))
+            if Auto.updatePlaceStatus then Auto.updatePlaceStatus() end
+        end
+        if #P.List == 0 then
+            if skippedCount(P.Skip) > 0 and retry < 2 then
+                retry += 1
+                table.clear(P.Skip)
+                table.clear(APFail)
+                table.clear(P.Tries)
+                task.wait(1.5)
+            else
+                stopPlace(("Selesai: tile di area sudah terisi (ditaruh %d)"):format(P.Placed))
+                return
+            end
+        else
+            local inReach = false
+            local R = buildReach() - 0.08
+            for _, t in ipairs(P.List) do
+                if stateReaches(s, t.x, t.y, R) then inReach = true break end
+            end
+            if inReach then
+                task.wait(0.1) -- penaruh sedang bekerja
+            else
+                Move.Homing = true
+                Move.HomingLive = function() return P.Running and alive() end
+                Move.HomingRoute = nil
+                autoBegin()
+                apTravel(s, P.List)
+                Move.Homing = false
+                Move.HomingLive = nil
+                releaseInput()
+                autoEnd()
+            end
+        end
+    end
+    releaseInput()
+end
+
+stopPlace = function(reason)
+    AutoPlace.Running = false
+    Move.Homing = false
+    Move.HomingLive = nil
+    releaseInput()
+    autoEnd()
+    AutoPlace.Status = reason or "Dihentikan"
+    if reason then notify("Auto Place", reason, 5) end
+    if Auto.updatePlaceStatus then Auto.updatePlaceStatus() end
+    if UI.PlaceToggle then pcall(function() UI.PlaceToggle:Set(false) end) end
+end
+
+function AutoPlace.start()
+    local P = AutoPlace
+    if P.Running then return end
+    local err = checkAutoStart()
+    if not err and (State.Running or Clear.Running or Farmer.Running or Pabrik.Running or Build.Running or AutoDrop.Busy) then
+        err = "Hentikan fitur farming lain dulu"
+    end
+    if not err and not P.BlockId then err = "Pilih block yang mau ditaruh" end
+    if not err and invCount(P.BlockId) <= 0 then err = "Block yang dipilih tidak ada di inventori" end
+    if err then
+        notify("Auto Place", err, 4)
+        if UI.PlaceToggle then pcall(function() UI.PlaceToggle:Set(false) end) end
+        return
+    end
+    P.Running = true
+    P.Status = "Mendeteksi area..."
+    task.spawn(function()
+        local set, n, src = P.buildArea()
+        if not P.Running then return end
+        if not set then
+            stopPlace("Area: " .. tostring(n))
+            return
+        end
+        P.Allowed, P.AllowedN, P.Source = set, n, src
+        table.clear(P.Skip)
+        table.clear(P.Tries)
+        table.clear(APFail)
+        table.clear(BadEdge)
+        P.List = {}
+        P.Placed = 0
+        task.spawn(apPlacer)
+        local ok, e = pcall(placeLoop)
+        if not ok then
+            warn("[n4th] Auto Place error: " .. tostring(e))
+            if P.Running then stopPlace("Error: " .. tostring(e)) end
+        end
+    end)
+end
+Auto.startPlace = AutoPlace.start
+Auto.stopPlace = function() if AutoPlace.Running then stopPlace("Dihentikan") end end
+
 -- Jalan ke 1 tile tertentu (dipakai Penjaga: balik ke posisi Auto Farm).
 -- Pakai A* yang sama, tanpa taruh block.
 local function walkTo(tx, ty, maxSec, live, route)
@@ -9453,6 +9752,140 @@ do
                 Farmer.PlantWood = on and true or false
                 table.clear(Farmer.GroundCache)
                 table.clear(Farmer.Skip)
+            end,
+        })
+    end)
+end
+
+-- ===== TAB: AUTO PLACE (isi semua tile kosong di dalam area Huge Lock) =====
+do
+    local tab = makeTab("Auto Place", "layout-grid", "farm")
+    safe(function() UI.PlaceStatus = tab:Paragraph({ Title = "Status", Desc = "Mati" }) end)
+    local ctl = box(tab, "Kontrol", true)
+    local area = box(tab, "Area", true)
+
+    local lastTxt
+    Auto.updatePlaceStatus = function()
+        if not UI.PlaceStatus then return end
+        local P = AutoPlace
+        local areaTxt
+        if P.P1X >= 0 and P.P2X >= 0 then
+            areaTxt = ("manual (%d,%d) - (%d,%d)"):format(P.P1X, P.P1Y, P.P2X, P.P2Y)
+        elseif P.Allowed then
+            areaTxt = ("otomatis, %d tile"):format(P.AllowedN)
+        else
+            areaTxt = "otomatis dari posisi karakter saat START"
+        end
+        local txt = "Status : " .. (P.Running and "JALAN" or "BERHENTI")
+            .. "\nBlock  : " .. (P.BlockId and (itemName(P.BlockId) .. " x" .. invCount(P.BlockId)) or "-")
+            .. "\nArea   : " .. areaTxt
+            .. "\nDitaruh: " .. P.Placed
+            .. "\nAksi   : " .. P.Status
+        if txt == lastTxt then return end
+        lastTxt = txt
+        task.defer(function() pcall(function() UI.PlaceStatus:SetDesc(txt) end) end)
+    end
+
+    safe(function()
+        UI.PlaceToggle = ctl:Toggle({
+            Title = "Auto Place",
+            Desc = "Mulai berdiri di dalam area. Karakter berjalan dan menaruh block di semua tile kosong dalam area",
+            Value = false,
+            Callback = function(on)
+                if on then AutoPlace.start() else Auto.stopPlace() end
+                Auto.updatePlaceStatus()
+            end,
+        })
+    end)
+    safe(function()
+        UI.APBlockDropdown = ctl:Dropdown({
+            Title = "Block yang ditaruh",
+            Desc = "Dari inventori. Background (mis. wallpaper) otomatis ditaruh di layer background",
+            Values = { "(memuat...)" },
+            Callback = function(opt)
+                local id = tonumber(string.match(opt or "", "%[(%d+)%]$"))
+                if id then
+                    AutoPlace.BlockId = id
+                    if Session.Ready then Config.save(true) end
+                    Auto.updatePlaceStatus()
+                end
+            end,
+        })
+    end)
+    safe(function()
+        ctl:Button({
+            Title = "Refresh daftar block",
+            Callback = function() UI.later("invForce", function() doInvRefresh(true) end) end,
+        })
+    end)
+    addNumber(ctl, {
+        Title = "Speed Place (ms)",
+        Desc = "Jeda tiap block ditaruh (game menolak yang lebih cepat dari ±140 ms)",
+        Min = 140, Max = 2000, Step = 10, Default = AutoPlace.PlaceMs,
+        Callback = function(v) AutoPlace.PlaceMs = math.floor(v) end,
+    })
+
+    safe(function()
+        area:Button({
+            Title = "Cek area dari posisi sekarang",
+            Desc = "Berdiri di dalam area Huge Lock lalu klik. Script mendeteksi tile yang boleh dibangun dan tersambung dari posisimu",
+            Callback = function()
+                task.spawn(function()
+                    local set, n, src = AutoPlace.buildArea()
+                    if not set then
+                        notify("Auto Place", "Area: " .. tostring(n), 6)
+                        return
+                    end
+                    AutoPlace.Allowed, AutoPlace.AllowedN, AutoPlace.Source = set, n, src
+                    local minx, maxx, miny, maxy = math.huge, -math.huge, math.huge, -math.huge
+                    local W = Refs.World.w
+                    for idx in pairs(set) do
+                        local x, y = idx % W, math.floor(idx / W)
+                        if x < minx then minx = x end
+                        if x > maxx then maxx = x end
+                        if y < miny then miny = y end
+                        if y > maxy then maxy = y end
+                    end
+                    notify("Auto Place", ("Area %s: %d tile, x %d-%d, y %d-%d"):format(src, n, minx, maxx, miny, maxy), 7)
+                    Auto.updatePlaceStatus()
+                end)
+            end,
+        })
+    end)
+    local function corner(n)
+        local x, y = Auto.here()
+        if not x then
+            notify("Auto Place", "Kamu belum masuk world", 3)
+            return
+        end
+        if n == 1 then AutoPlace.P1X, AutoPlace.P1Y = x, y else AutoPlace.P2X, AutoPlace.P2Y = x, y end
+        AutoPlace.Allowed = nil
+        if Session.Ready then Config.save(true) end
+        notify("Auto Place", ("Pojok %d tersimpan di (%d,%d)"):format(n, x, y), 4)
+        Auto.updatePlaceStatus()
+    end
+    safe(function()
+        area:Button({
+            Title = "Tandai pojok 1 (kiri atas) di posisi sekarang",
+            Desc = "Opsional. Dipakai kalau deteksi otomatis tidak bisa membatasi area",
+            Callback = function() corner(1) end,
+        })
+    end)
+    safe(function()
+        area:Button({
+            Title = "Tandai pojok 2 (kanan bawah) di posisi sekarang",
+            Callback = function() corner(2) end,
+        })
+    end)
+    safe(function()
+        area:Button({
+            Title = "Hapus area manual",
+            Desc = "Kembali ke deteksi otomatis",
+            Callback = function()
+                AutoPlace.P1X, AutoPlace.P1Y, AutoPlace.P2X, AutoPlace.P2Y = -1, -1, -1, -1
+                AutoPlace.Allowed = nil
+                if Session.Ready then Config.save(true) end
+                Auto.updatePlaceStatus()
             end,
         })
     end)
