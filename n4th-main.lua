@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-15-auto-place-area"
+Session.Build = "2026-11-15-auto-place-area2"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -6435,31 +6435,19 @@ function AutoPlace.buildArea()
         end
         return set, n, "manual"
     end
-    local s = playerState()
-    if not s then return nil, "karakter belum terbaca" end
-    local sx, sy = startNode(s)
-    if not canWorkAt(sx, sy) then return nil, "posisimu di luar area yang boleh dibangun" end
-    local q, head = { sy * W + sx }, 1
-    set[sy * W + sx] = true
-    n = 1
-    local steps = 0
-    while head <= #q do
-        local idx = q[head]
-        head += 1
-        local x, y = idx % W, floor(idx / W)
-        for _, d in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
-            local nx, ny = x + d[1], y + d[2]
-            if nx >= 0 and ny >= 0 and nx < W and ny < H then
-                local ni = ny * W + nx
-                if not set[ni] and canWorkAt(nx, ny) then
-                    set[ni] = true
-                    n += 1
-                    q[#q + 1] = ni
-                end
+    -- Otomatis: semua tile di world yang boleh dibangun (= area lock yang digaris putus-putus).
+    -- Tidak perlu berdiri di dalam area.
+    for y = 0, H - 1 do
+        for x = 0, W - 1 do
+            if canWorkAt(x, y) then
+                set[y * W + x] = true
+                n += 1
             end
         end
-        steps += 1
-        if steps % 300 == 0 then task.wait() end
+        if y % 6 == 0 then task.wait() end
+    end
+    if n == 0 then
+        return nil, "tidak ada tile yang boleh kamu bangun di world ini (cek izin lock)"
     end
     if n >= W * H * 0.85 then
         return nil, "seluruh world bisa dibangun (area lock tidak terbaca). Tandai 2 pojok area secara manual"
@@ -9774,7 +9762,7 @@ do
         elseif P.Allowed then
             areaTxt = ("otomatis, %d tile"):format(P.AllowedN)
         else
-            areaTxt = "otomatis dari posisi karakter saat START"
+            areaTxt = "otomatis: semua tile yang boleh dibangun (dicek saat START)"
         end
         local txt = "Status : " .. (P.Running and "JALAN" or "BERHENTI")
             .. "\nBlock  : " .. (P.BlockId and (itemName(P.BlockId) .. " x" .. invCount(P.BlockId)) or "-")
@@ -9827,8 +9815,8 @@ do
 
     safe(function()
         area:Button({
-            Title = "Cek area dari posisi sekarang",
-            Desc = "Berdiri di dalam area Huge Lock lalu klik. Script mendeteksi tile yang boleh dibangun dan tersambung dari posisimu",
+            Title = "Cek area (tile yang boleh dibangun)",
+            Desc = "Mendeteksi semua tile di world yang boleh kamu bangun (area Huge Lock). Tidak perlu berdiri di dalam area",
             Callback = function()
                 task.spawn(function()
                     local set, n, src = AutoPlace.buildArea()
