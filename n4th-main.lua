@@ -5353,12 +5353,16 @@ local function clearLoop()
             local remaining = countRemaining()
             Clear.Remaining = remaining
             if remaining == 0 then
+                local wasBreakBlock = Clear.TargetId ~= nil
                 stopClear(Clear.TargetId and ("Selesai. Semua " .. itemName(Clear.TargetId) .. " yang bisa dipecah sudah habis.") or "World sudah bersih!")
+                if wasBreakBlock then Auto.afterAutoBreakBlockDone() end
                 return
             end
             idle += 1
             if idle >= 3 then
+                local wasBreakBlock = Clear.TargetId ~= nil
                 stopClear(("Selesai. Sisa %d tile tidak bisa dijangkau / dipecah"):format(remaining))
+                if wasBreakBlock then Auto.afterAutoBreakBlockDone() end
                 return
             end
             Clear.Status = ("Sisa %d tile dilewati, coba ulang (%d/3)..."):format(remaining, idle)
@@ -6964,6 +6968,28 @@ end
 Auto.startPlace = AutoPlace.start
 Auto.stopPlace = function() if AutoPlace.Running then stopPlace("Dihentikan") end end
 
+-- Auto Break Block selesai (habis / tidak terjangkau lagi): respawn dulu, lalu lanjutkan Auto Place.
+function Auto.afterAutoBreakBlockDone()
+    if Auto.AutoBreakThenPlaceBusy then return end
+    Auto.AutoBreakThenPlaceBusy = true
+    task.spawn(function()
+        local ok, err = pcall(function()
+            task.wait(0.3)
+            local respawned = AutoPlace.respawn()
+            notify("Auto Break Block",
+                respawned and "Selesai, respawn ditekan, lanjut Auto Place..."
+                    or "Selesai, tapi respawn gagal (tombol Respawn tidak ketemu). Auto Place tidak dijalankan.",
+                5)
+            if respawned then
+                task.wait(3)
+                if not AutoPlace.Running then AutoPlace.start() end
+            end
+        end)
+        if not ok then warn("[n4th] afterAutoBreakBlockDone error: " .. tostring(err)) end
+        Auto.AutoBreakThenPlaceBusy = false
+    end)
+end
+
 -- Jalan ke 1 tile tertentu (dipakai Penjaga: balik ke posisi Auto Farm).
 -- Pakai A* yang sama, tanpa taruh block.
 local function walkTo(tx, ty, maxSec, live, route)
@@ -7805,6 +7831,11 @@ local function routeDropDoDrop(resumeX, resumeY)
         return false
     end
     routeDropLog(("DROP BERHASIL: %s x%d; sisa inventori=%d"):format(itemName(RouteDrop.TargetId), got, invCount(RouteDrop.TargetId)), true)
+    if not live() then return false end
+    RouteDrop.Status = "Drop 200 selesai, respawn..."
+    local respawned = AutoPlace.respawn()
+    routeDropLog(respawned and "Respawn ditekan setelah drop 200." or "Respawn gagal (tombol Respawn tidak ketemu) setelah drop 200.", true)
+    if respawned then task.wait(3) end
     if not live() then return false end
     RouteDrop.Status = "Kembali ke jalur farming"
     if resumeX and resumeY then
