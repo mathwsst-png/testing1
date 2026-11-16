@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-17-place-row-sweep"
+Session.Build = "2026-11-17-place-fast"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -6714,28 +6714,35 @@ local function apPlacer()
         local _, curBody = startNode(s or { x = 0, y = 0 })
         if s and not s.dead and id and invCount(id) > 0 and #P.List > 0 and curBody == P.Row then
             local R = buildReach() - 0.08
-            local bt, bd
+            -- semua tile di jangkauan ditaruh beruntun (cepat), bukan satu-satu
+            local reach = {}
             for _, t in ipairs(P.List) do
-                if stateReaches(s, t.x, t.y, R) then
-                    local d = abs(t.x + 0.5 - s.x) + abs(t.y + 0.5 - (s.y - 0.475))
-                    if not bd or d < bd then bt, bd = t, d end
-                end
+                if stateReaches(s, t.x, t.y, R) then reach[#reach + 1] = t end
             end
-            if bt then
+            if #reach > 0 then
+                table.sort(reach, function(p1, p2)
+                    return abs(p1.x + 0.5 - s.x) < abs(p2.x + 0.5 - s.x)
+                end)
                 local layer = apLayer(id)
-                if tileAt(layer, bt.x, bt.y) == 0 then
-                    local tries = (P.Tries[bt.idx] or 0) + 1
-                    P.Tries[bt.idx] = tries
-                    if tries > 3 then
-                        skipTile(P.Skip, bt.idx, 60)
-                        P.Tries[bt.idx] = nil
-                    else
-                        sendSetTile(layer, bt.x, bt.y, id)
-                        if Refs.Inv then pcall(function() Refs.Inv:remove(id, 1) end) end
-                        P.Placed += 1
+                local gap = math.max(P.PlaceMs or 60, 35) / 1000
+                if gap > 0.06 then gap = 0.06 end -- batas atas: tidak lebih lambat dari 60ms per tile
+                for _, bt in ipairs(reach) do
+                    if not (P.Running and alive()) or invCount(id) <= 0 then break end
+                    if tileAt(layer, bt.x, bt.y) == 0 then
+                        local tries = (P.Tries[bt.idx] or 0) + 1
+                        P.Tries[bt.idx] = tries
+                        if tries > 3 then
+                            skipTile(P.Skip, bt.idx, 60)
+                            P.Tries[bt.idx] = nil
+                        else
+                            sendSetTile(layer, bt.x, bt.y, id)
+                            if Refs.Inv then pcall(function() Refs.Inv:remove(id, 1) end) end
+                            P.Placed += 1
+                        end
+                        task.wait(gap)
                     end
                 end
-                task.wait(math.max(P.PlaceMs or 150, 140) / 1000)
+                task.wait(0.05) -- beri waktu server meng-update tile sebelum cek ulang
             else
                 task.wait(0.03)
             end
