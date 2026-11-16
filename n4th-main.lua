@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-17-place-fast"
+Session.Build = "2026-11-17-place-corner-right"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -6666,7 +6666,7 @@ function AutoPlace.buildArea()
     return set, n, "otomatis"
 end
 
--- Hanya tile TEPAT DI ATAS Wooden Platform (baris y, platform di baris y+1)
+-- Hanya tile TEPAT DI ATAS Wooden Platform atau Dirt (baris y, pijakan di baris y+1)
 local apPlatCache = {}
 local function apOnPlatform(x, y)
     local below = tileAt("fg", x, y + 1)
@@ -6674,7 +6674,7 @@ local function apOnPlatform(x, y)
     local v = apPlatCache[below]
     if v == nil then
         local n = string.lower(tostring(itemName(below) or ""))
-        v = n:find("wooden platform", 1, true) ~= nil
+        v = n:find("wooden platform", 1, true) ~= nil or n:find("dirt", 1, true) ~= nil
         apPlatCache[below] = v
     end
     return v
@@ -6759,14 +6759,14 @@ local function apTravel(s, targets)
         -- satu baris platform sekali jalan: berdiri di platform baris itu, geser ke tile terdekat
         local sx0, sy0 = startNode(s)
         local Y = targets[1].y
-        local n0, bd
+        local dirv = AutoPlace.Dir or -1
+        local n0
         for _, t in ipairs(targets) do
-            local d = abs(t.x - sx0)
-            if not bd or d < bd then n0, bd = t, d end
+            -- arah -1: tile paling kanan dulu (lalu ke kiri); arah +1: tile paling kiri dulu
+            if not n0 or (t.x - n0.x) * dirv < 0 then n0 = t end
         end
-        local dirv = (n0.x >= sx0) and 1 or -1
         for _, off in ipairs({ 2, 1, 0 }) do
-            local cx = n0.x - dirv * off
+            local cx = n0.x + dirv * off
             if cx >= 0 and cx < W and not (cx == sx0 and sy0 == Y) then
                 local path = astar(sx0, sy0, { [Y * W + cx] = true }, cx, Y, 0.5, false)
                 if path and #path > 0 then
@@ -7150,11 +7150,11 @@ local function placeLoop()
             end
             if not (P.Row and has[P.Row]) then
                 P.Row = nil
-                local bd
+                -- mulai dari baris PALING BAWAH (y terbesar), lalu naik
                 for y in pairs(has) do
-                    local d = abs(y - by0)
-                    if not bd or d < bd or (d == bd and y > P.Row) then P.Row, bd = y, d end
+                    if not P.Row or y > P.Row then P.Row = y end
                 end
+                P.Dir = P.Dir and -P.Dir or -1 -- baris pertama: dari pojok KANAN ke kiri, lalu zig-zag
             end
             for _, t in ipairs(all) do
                 if t.y == P.Row then rows[#rows + 1] = t end
@@ -7262,6 +7262,7 @@ function AutoPlace.start()
         table.clear(BadEdge)
         P.List = {}
         P.Placed = 0
+        P.Row, P.Dir = nil, nil
         task.spawn(apPlacer)
         local ok, e = pcall(placeLoop)
         if not ok then
