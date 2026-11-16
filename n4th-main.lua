@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-16-break-place-chain"
+Session.Build = "2026-11-16-break-place-chain2"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -5356,16 +5356,31 @@ local function clearLoop()
             local remaining = countRemaining()
             Clear.Remaining = remaining
             if remaining == 0 then
+                -- jangan percaya satu kali hitung: tunggu sebentar (sinkron server) lalu hitung ulang
+                Clear.Status = "Memastikan semua block target sudah hancur..."
+                updateClearStatus()
+                task.wait(0.8)
+                if not Clear.Running or not alive() then break end
+                if Refs.World ~= w then continue end
+                local again = countRemaining()
+                if again ~= 0 then
+                    Clear.Remaining = again
+                    continue -- masih ada / belum selesai dibaca: lanjut memecah
+                end
                 local wasBreakBlock = Clear.TargetId ~= nil
                 stopClear(Clear.TargetId and ("Selesai. Semua " .. itemName(Clear.TargetId) .. " yang bisa dipecah sudah habis.") or "World sudah bersih!")
-                if wasBreakBlock then Auto.afterAutoBreakBlockDone() end
+                if wasBreakBlock then Auto.afterAutoBreakBlockDone(true) end
                 return
             end
             idle += 1
             if idle >= 3 then
                 local wasBreakBlock = Clear.TargetId ~= nil
                 stopClear(("Selesai. Sisa %d tile tidak bisa dijangkau / dipecah"):format(remaining))
-                if wasBreakBlock then Auto.afterAutoBreakBlockDone() end
+                -- masih ada block target: Auto Place TIDAK dijalankan
+                if wasBreakBlock and AutoPlace.Chain then
+                    notify("Auto Break Block",
+                        ("Masih ada %d block target yang belum hancur, Auto Place tidak dijalankan"):format(remaining), 6)
+                end
                 return
             end
             Clear.Status = ("Sisa %d tile dilewati, coba ulang (%d/3)..."):format(remaining, idle)
@@ -7039,8 +7054,10 @@ Auto.startPlace = AutoPlace.start
 Auto.stopPlace = function() if AutoPlace.Running then stopPlace("Dihentikan") end end
 
 -- Auto Break Block selesai (habis / tidak terjangkau lagi): respawn dulu, lalu lanjutkan Auto Place.
-function Auto.afterAutoBreakBlockDone()
+function Auto.afterAutoBreakBlockDone(verified)
     if not AutoPlace.Chain then return end
+    if not verified then return end -- hanya dari jalur "semua block target sudah habis"
+    if Clear.Running then return end
     if Auto.AutoBreakThenPlaceBusy then return end
     Auto.AutoBreakThenPlaceBusy = true
     task.spawn(function()
