@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-17-break-band-zigzag2"
+Session.Build = "2026-11-17-break-band-zigzag3"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -5387,7 +5387,10 @@ local function clearBandStep(w, s)
     Clear.TopRow, Clear.Dir, Clear.DirRow = Y, dir, Y
 
     -- 2) pecahkan yang terjangkau (hanya pita ini; pita lain dibiarkan)
-    local list = bandInReach(s, Y, dir)
+    -- WAJIB sudah berdiri di tingkat yang benar (badan di baris Y-2) sebelum memukul;
+    -- kalau belum, naik/turun dulu, jangan memukul pita dari tingkat yang salah.
+    local _, curRow = startNode(s)
+    local list = (curRow == Y - 2) and bandInReach(s, Y, dir) or {}
     if #list > 0 then
         Clear.BandStall = 0
         clearBreakList(list, s)
