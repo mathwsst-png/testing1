@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-17-break-band-zigzag"
+Session.Build = "2026-11-17-break-band-zigzag2"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -5315,14 +5315,14 @@ end
 -- Mulai dari pita PALING BAWAH di ujung kanan, karakter berdiri di platform DI ATAS pita itu
 -- dan bergerak ke kiri sambil memecah 5 tile sekaligus (hanya pita ini). Kalau pita habis /
 -- sampai ujung, naik SATU tingkat ke pita berikutnya dan menyapu ke arah sebaliknya (zig-zag).
-local function bandRowTargets(w, Y)
+local function bandRowTargets(w, Y, ignoreSkip)
     local out = {}
     if Y < 0 or Y >= w.h then return out end
     local W = w.w
     local now = os.clock()
     for x = 0, W - 1 do
         local idx = Y * W + x
-        if not skipped(Clear.Skip, idx, now) and clearLayerAt(x, Y) then
+        if (ignoreSkip or not skipped(Clear.Skip, idx, now)) and clearLayerAt(x, Y) then
             out[#out + 1] = { x = x, y = Y, idx = idx }
         end
     end
@@ -5358,7 +5358,8 @@ local function clearBandStep(w, s)
     local W, H = w.w, w.h
     local B = Clear.Band
     -- 1) pilih pita aktif: pita paling bawah dulu, lalu naik satu tingkat tiap kali pita habis
-    if not B or #bandRowTargets(w, B.row) == 0 then
+    if B and Clear.BandGave and Clear.BandGave[B.row] then B = nil; Clear.Band = nil end
+    if not B or #bandRowTargets(w, B.row, true) == 0 then
         local prev = B
         if prev and State.WorldBreakCollect then
             Clear.Status = "Ambil drop pita..."
@@ -5370,11 +5371,11 @@ local function clearBandStep(w, s)
         end
         local newRow
         for Y = (prev and prev.row - 1 or H - 1), 0, -1 do
-            if #bandRowTargets(w, Y) > 0 then newRow = Y break end
+            if #bandRowTargets(w, Y, true) > 0 and not (Clear.BandGave and Clear.BandGave[Y]) then newRow = Y break end
         end
         if not newRow and prev then
             for Y = H - 1, prev.row, -1 do
-                if #bandRowTargets(w, Y) > 0 then newRow = Y break end
+                if #bandRowTargets(w, Y, true) > 0 and not (Clear.BandGave and Clear.BandGave[Y]) then newRow = Y break end
             end
         end
         if not newRow then return false end
@@ -5388,13 +5389,20 @@ local function clearBandStep(w, s)
     -- 2) pecahkan yang terjangkau (hanya pita ini; pita lain dibiarkan)
     local list = bandInReach(s, Y, dir)
     if #list > 0 then
+        Clear.BandStall = 0
         clearBreakList(list, s)
         return true
     end
 
     -- 3) geser ke tengah 5 tile berikutnya sesuai arah
     local rem = bandRowTargets(w, Y)
-    if #rem == 0 then return true end
+    if #rem == 0 then
+        -- sisa hanya tile yang sedang di-skip: tunggu, jangan naik dulu
+        task.wait(0.5)
+        Clear.BandStall = (Clear.BandStall or 0) + 1
+        if Clear.BandStall >= 40 then Clear.BandStall = 0; Clear.BandGave = Clear.BandGave or {}; Clear.BandGave[Y] = true end
+        return true
+    end
     table.sort(rem, function(a, b) return a.x * dir < b.x * dir end)
     local t0 = rem[1]
     local group, minx, maxx = {}, math.huge, -math.huge
@@ -5411,7 +5419,7 @@ local function clearBandStep(w, s)
     local sx, sy = startNode(s)
     local R = punchReach() - 0.08
     -- berdiri di platform DI ATAS pita (baris Y-2); cadangan: di platform pita itu sendiri (baris Y)
-    for _, standRow in ipairs({ Y - 2, Y }) do
+    for _, standRow in ipairs({ Y - 2 }) do
         if standRow >= 0 then
             for _, cxm in ipairs({ mid, mid - dir, mid + dir, mid - 2 * dir }) do
                 local fake = { x = cxm + 0.5, y = standRow + 0.975 }
@@ -5433,8 +5441,16 @@ local function clearBandStep(w, s)
             end
         end
     end
-    -- tidak ada posisi berdiri yang bisa dicapai: lewati kelompok ini sebentar
-    for _, t in ipairs(group) do skipTile(Clear.Skip, t.idx, 30) end
+    -- tidak ada posisi berdiri yang bisa dicapai: tunggu & coba lagi, JANGAN naik sebelum pita habis
+    Clear.BandStall = (Clear.BandStall or 0) + 1
+    if Clear.BandStall >= 8 then
+        Clear.BandStall = 0
+        Clear.BandGave = Clear.BandGave or {}
+        Clear.BandGave[Y] = true
+        Clear.Dbg = ("pita y=%d menyerah (tak terjangkau)"):format(Y)
+        return true
+    end
+    task.wait(1)
     Clear.Why.nopath += 1
     Clear.Dbg = ("pita y=%d: tanpa jalan ke posisi berdiri, kelompok dilewati"):format(Y)
     return true
@@ -5675,6 +5691,8 @@ local function startClear(targetId)
     Clear.TopRow = -1
     Clear.DirRow, Clear.Dir = nil, nil
     Clear.Band = nil
+    Clear.BandGave = {}
+    Clear.BandStall = 0
     Clear.Status = "Mulai..."
     if not targetId then Clear.TargetLayer = nil end
     Clear.TargetId = targetId
