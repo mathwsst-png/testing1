@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-15-auto-place-loop-respawn-ui5"
+Session.Build = "2026-11-16-auto-plant-respawn"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -881,6 +881,7 @@ local Farmer = {
     PlantDirt = true,     -- tanah: Dirt (termasuk Grass)
     PlantWood = true,     -- pijakan: Wooden Platform
     GroundCache = {},
+    PlantRespawn = false, -- Auto Plant: seed habis -> respawn lewat menu UI, lalu lanjut tanam
     PlantOnly = false,    -- mode tab "Auto Plant": hanya tanam di Dirt / Wooden Platform (tidak disimpan)
     Collect = true,
     UseBlock = false,   -- taruh block kalau tidak ada jalan
@@ -1888,7 +1889,7 @@ end
 Config.add("Clear", Clear, { "UseBlock", "ScaffoldId", "Collect", "Sweep" })
 Config.add("Farmer", Farmer, {
     "Harvest", "Plant", "Collect", "UseBlock", "ScaffoldId", "HarvestMs", "PlantMs", "SeedId", "Focus", "Tractor",
-    "GroundFilter", "PlantDirt", "PlantWood",
+    "GroundFilter", "PlantDirt", "PlantWood", "PlantRespawn",
 })
 -- update 1084: game memberi jeda minimal antar aksi (place ~0.135 dtk, pukul ~0.19 dtk)
 State.PlaceMs = math.max(State.PlaceMs, 140)
@@ -6207,10 +6208,45 @@ local function plantSweepStep()
     if not s.grounded then task.wait(0.05) return "wait" end
     local function live() return Farmer.Running and Farmer.PlantOnly and alive() end
 
-    -- 1) Seed habis di backpack: cari seed yang ter-drop di world dan ambil
+    -- 1) Seed habis di backpack
+    if fcSeeds() > 0 then Farmer.PlantEmptyDone = false end
     if fcSeeds() <= 0 then
         local sid = FC.seed
         if not sid then return "idle" end
+        -- 1a) Respawn lewat menu UI (sekali per kondisi habis; ulang tiap 60 dtk kalau masih kosong)
+        if Farmer.PlantRespawn and (not Farmer.PlantEmptyDone or os.clock() - (Farmer.PlantLastRespawn or 0) > 60) then
+            Farmer.PlantEmptyDone = true
+            Farmer.PlantLastRespawn = os.clock()
+            Farmer.Status = "Seed habis: respawn..."
+            releaseInput()
+            local p0 = playerState()
+            local x0, y0 = p0 and p0.x, p0 and p0.y
+            if AutoPlace.respawn() then
+                -- tunggu karakter benar-benar respawn (mati / pindah ke spawn), lalu hidup & berdiri
+                local t0 = os.clock()
+                while live() and os.clock() - t0 < 4 do
+                    local st = playerState()
+                    if st and (st.dead or (x0 and (math.abs(st.x - x0) > 4 or math.abs(st.y - y0) > 4))) then break end
+                    task.wait(0.1)
+                end
+                t0 = os.clock()
+                while live() and os.clock() - t0 < 20 do
+                    local st = playerState()
+                    if st and not st.dead and st.grounded then break end
+                    task.wait(0.2)
+                end
+                task.wait(1)
+                table.clear(Farmer.Skip)
+                table.clear(FarmerFail)
+                table.clear(BadEdge)
+                table.clear(Farmer.Row)
+                if fcSeeds() > 0 then return "work" end
+            else
+                Farmer.Status = "Respawn gagal: " .. tostring(AutoPlace.RespawnWhy or "tombol Respawn tidak ketemu")
+                task.wait(1)
+            end
+        end
+        -- 1b) cari seed yang ter-drop di world dan ambil
         Farmer.Status = "Seed habis: cari seed yang ter-drop..."
         local n = Move.fetchDrops(live, 80, function(d) return d.id == sid end, 25)
         releaseInput()
@@ -10031,6 +10067,18 @@ do
         ctl:Button({
             Title = "Refresh daftar seed",
             Callback = function() UI.later("invForce", function() doInvRefresh(true) end) end,
+        })
+    end)
+    safe(function()
+        ctl:Toggle({
+            Title = "Seed habis: respawn lalu lanjut tanam",
+            Desc = "Kalau seed habis, karakter respawn lewat menu game (tidak keluar world), lalu lanjut menanam. Kalau masih kosong, respawn ulang tiap 60 dtk. Cari dulu seed ter-drop kalau respawn tidak membawa seed",
+            Value = Farmer.PlantRespawn,
+            Callback = function(on)
+                Farmer.PlantRespawn = on and true or false
+                Farmer.PlantEmptyDone = false
+                if Session.Ready then Config.save(true) end
+            end,
         })
     end)
     addNumber(ctl, {
