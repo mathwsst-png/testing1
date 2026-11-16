@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-17-place-on-platform"
+Session.Build = "2026-11-17-place-row-sweep"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -6711,7 +6711,8 @@ local function apPlacer()
     while P.Running and alive() do
         local s = playerState()
         local id = P.BlockId
-        if s and not s.dead and id and invCount(id) > 0 and #P.List > 0 then
+        local _, curBody = startNode(s or { x = 0, y = 0 })
+        if s and not s.dead and id and invCount(id) > 0 and #P.List > 0 and curBody == P.Row then
             local R = buildReach() - 0.08
             local bt, bd
             for _, t in ipairs(P.List) do
@@ -6747,6 +6748,32 @@ end
 local function apTravel(s, targets)
     local w = Refs.World
     local W = w.w
+    do
+        -- satu baris platform sekali jalan: berdiri di platform baris itu, geser ke tile terdekat
+        local sx0, sy0 = startNode(s)
+        local Y = targets[1].y
+        local n0, bd
+        for _, t in ipairs(targets) do
+            local d = abs(t.x - sx0)
+            if not bd or d < bd then n0, bd = t, d end
+        end
+        local dirv = (n0.x >= sx0) and 1 or -1
+        for _, off in ipairs({ 2, 1, 0 }) do
+            local cx = n0.x - dirv * off
+            if cx >= 0 and cx < W and not (cx == sx0 and sy0 == Y) then
+                local path = astar(sx0, sy0, { [Y * W + cx] = true }, cx, Y, 0.5, false)
+                if path and #path > 0 then
+                    AutoPlace.Status = ("Ke (%d,%d) untuk isi baris %d"):format(cx, Y, Y)
+                    followPath(path)
+                    releaseInput()
+                    return true
+                end
+            end
+        end
+        if travelGroup(sx0, sy0, { n0 }, buildReach() - 0.35, false, AutoPlace.Skip, APFail) then return true end
+        skipTile(AutoPlace.Skip, n0.idx, 20)
+        return false
+    end
     local t0 = targets[1]
     local group, minx, maxx = {}, math.huge, -math.huge
     for _, t in ipairs(targets) do
@@ -7107,14 +7134,33 @@ local function placeLoop()
             stopPlace("Block habis")
             return
         end
-        P.List = apTargets()
+        local all = apTargets()
+        do
+            local _, by0 = startNode(s)
+            local rows, has = {}, {}
+            for _, t in ipairs(all) do
+                has[t.y] = true
+            end
+            if not (P.Row and has[P.Row]) then
+                P.Row = nil
+                local bd
+                for y in pairs(has) do
+                    local d = abs(y - by0)
+                    if not bd or d < bd or (d == bd and y > P.Row) then P.Row, bd = y, d end
+                end
+            end
+            for _, t in ipairs(all) do
+                if t.y == P.Row then rows[#rows + 1] = t end
+            end
+            P.List = rows
+        end
         if os.clock() - lastUi > 0.5 then
             lastUi = os.clock()
             P.Status = ("Isi area (%s): sisa %d tile | ditaruh %d | %s x%d"):format(
-                P.Source, #P.List, P.Placed, itemName(id), invCount(id))
+                P.Source, #all, P.Placed, itemName(id), invCount(id))
             if Auto.updatePlaceStatus then Auto.updatePlaceStatus() end
         end
-        if #P.List == 0 then
+        if #all == 0 then
             if P.FromChain then
                 -- rantai Auto Break -> Auto Place: semua sudah terpasang, respawn lalu selesai
                 P.Status = "Semua tile terpasang: respawn..."
@@ -7144,8 +7190,9 @@ local function placeLoop()
         else
             local inReach = false
             local R = buildReach() - 0.08
+            local _, curBody = startNode(s)
             for _, t in ipairs(P.List) do
-                if stateReaches(s, t.x, t.y, R) then inReach = true break end
+                if curBody == P.Row and stateReaches(s, t.x, t.y, R) then inReach = true break end
             end
             if inReach then
                 task.wait(0.1) -- penaruh sedang bekerja
