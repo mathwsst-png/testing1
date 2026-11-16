@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-16-route-drop-respawn200"
+Session.Build = "2026-11-16-route-drop-respawn-then-drop"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -811,7 +811,9 @@ local RouteDrop = {
     Running = false,
     TargetId = nil,
     PlatformId = nil,
-    Respawns = 0, -- berapa kali respawn setelah item mencapai 200
+    DropX = -1,
+    DropY = -1,
+    DropFace = 0, -- arah hadap saat Drop Point ditandai: -1 kiri, 1 kanan, 0 belum diset
     Direction = "Kiri → Kanan",
     Status = "Mati",
     CollectedStops = 0,
@@ -1879,7 +1881,7 @@ Config.add("Farm", State, {
     "WorldBreakId", "WorldBreakCollect",
 })
 Config.add("AutoPlace", AutoPlace, { "BlockId", "PlaceMs", "P1X", "P1Y", "P2X", "P2Y", "Loop", "RespawnOnEmpty" })
-Config.add("RouteDrop", RouteDrop, { "TargetId", "PlatformId", "Direction" })
+Config.add("RouteDrop", RouteDrop, { "TargetId", "PlatformId", "DropX", "DropY", "DropFace", "Direction" })
 -- Pindahkan nilai default lama. Nilai yang dipilih di versi baru tetap berlaku.
 if (Config.Data.Version == nil or Config.Data.Version == 1) and State.AfterBreakMs == 300 then
     State.AfterBreakMs = 250
@@ -7699,7 +7701,7 @@ end
 ---------------------------------------------------------------------
 -- AUTO ROUTE DROP
 -- Menelusuri drop terpilih yang berada di atas platform pilihan. Setelah inventori
--- mencapai 200, langsung respawn (tanpa Drop Point), lalu lanjut menyusuri jalur.
+-- mencapai 200, respawn dulu, langsung ke Drop Point dari spawn, drop 200, lalu lanjut menyusuri jalur.
 ---------------------------------------------------------------------
 local function routeDropLive()
     return alive() and RouteDrop.Running and Refs.World == RouteDrop.World
@@ -7740,6 +7742,11 @@ local function routeDropOnPlatform(d)
     return routeDropPlatformRow(d) ~= nil
 end
 
+local function routeDropAtPoint(d)
+    return math.abs(d.x - (RouteDrop.DropX + 0.5)) <= 2.5
+        and math.abs(d.y - (RouteDrop.DropY + 0.5)) <= 2.5
+end
+
 local function routeDropTargets()
     local list, out = Drops.list, {}
     if not list then return out end
@@ -7753,7 +7760,7 @@ local function routeDropTargets()
                 diag.item += 1
                 if type(d.x) == "number" and type(d.y) == "number" then
                     diag.position += 1
-                    if d.armed ~= false then
+                    if d.armed ~= false and not routeDropAtPoint(d) then
                         diag.armed += 1
                         if routeDropOnPlatform(d) then
                             diag.platform += 1
@@ -7779,53 +7786,128 @@ local function routeDropTargets()
     return out
 end
 
--- Item mencapai 200: langsung respawn lewat menu UI (tanpa Drop Point), lalu lanjut menyusuri jalur.
-local function routeDropDoDrop(resumeX, resumeY)
-    local target = RouteDrop.TargetId
-    if invCount(target) < 200 then return true end
-    local live = routeDropLive
-    if not live() then return false end
-    -- respawn sudah ditekan tapi item masih 200: jangan spam respawn
-    if os.clock() - (RouteDrop.LastRespawn or -100) < 20 then
-        RouteDrop.Status = "Item masih 200 setelah respawn, menunggu..."
-        task.wait(1)
-        return false
+-- Berdiri tepat di tengah tile Drop Point dan menghadap arah yang sama seperti
+-- saat titik ditandai, supaya posisi drop selalu konsisten.
+local function routeDropAlign(dx, dy, live)
+    local face = RouteDrop.DropFace
+    if face ~= -1 and face ~= 1 then face = 0 end
+    local cx = dx + 0.5
+    local function facingNow()
+        local st = playerState()
+        return st and ((st.facing or 1) < 0 and -1 or 1) or 0
     end
-    RouteDrop.LastRespawn = os.clock()
-    local before = invCount(target)
-    RouteDrop.Status = ("Item %s x%d: respawn..."):format(itemName(target), before)
-    routeDropLog(("Item mencapai 200 (inventori=%d); respawn tanpa Drop Point."):format(before), true)
+    local function centered()
+        local st = playerState()
+        return st and floor(st.x) == dx and abs(st.x - cx) <= 0.15 and st.grounded
+    end
+    if centered() and (face == 0 or facingNow() == face) then return true end
+    autoBegin()
+    -- Masuk ke tile dari sisi belakang sehingga karakter otomatis menghadap arah tujuan
+    if face ~= 0 and live() and not solidAt(dx - face, dy) and not solidAt(dx - face, dy - 1) then
+        local st = playerState()
+        if st and not (floor(st.x) == dx - face and floor(st.y - 0.475) == dy) then
+            walkTo(dx - face, dy, 10, live)
+        end
+    end
+    if live() then execWalk(dx, dy, 0.12) end
+    -- Cadangan: kalau masih salah arah, tekan arah tujuan sebentar
+    if face ~= 0 and live() and facingNow() ~= face then
+        AutoInput.active = true
+        AutoInput.left, AutoInput.right = face < 0, face > 0
+        task.wait(0.05)
+        AutoInput.left, AutoInput.right = false, false
+        task.wait(0.15)
+    end
+    releaseInput()
+    autoEnd()
+    local ok = centered() and (face == 0 or facingNow() == face)
+    routeDropLog(("Posisi drop: tengah=%s, hadap=%s (target %s)"):format(
+        tostring(centered() and true or false), tostring(facingNow()), tostring(face)), true)
+    return ok
+end
+
+local function routeDropDoDrop(resumeX, resumeY)
+    if invCount(RouteDrop.TargetId) < 200 then return true end
+    local live = routeDropLive
+    local dx, dy = RouteDrop.DropX, RouteDrop.DropY
+    if not live() then return false end
+
+    -- 1) Respawn dulu (karakter kembali ke spawn), supaya jalan ke Drop Point lebih pendek
+    RouteDrop.Status = "Item 200: respawn..."
+    routeDropLog("Item mencapai 200; respawn dulu lalu langsung ke Drop Point.", true)
     releaseInput()
     local p0 = playerState()
     local x0, y0 = p0 and p0.x, p0 and p0.y
-    if not AutoPlace.respawn() then
-        RouteDrop.Status = "Respawn gagal: " .. tostring(AutoPlace.RespawnWhy or "tombol Respawn tidak ketemu")
-        routeDropLog("ERROR: respawn gagal: " .. tostring(AutoPlace.RespawnWhy or "tombol Respawn tidak ketemu"), true)
-        task.wait(2)
+    if AutoPlace.respawn() then
+        local t0 = os.clock()
+        while live() and os.clock() - t0 < 4 do
+            local st = playerState()
+            if st and (st.dead or (x0 and (math.abs(st.x - x0) > 4 or math.abs(st.y - y0) > 4))) then break end
+            task.wait(0.1)
+        end
+        t0 = os.clock()
+        while live() and os.clock() - t0 < 20 do
+            local st = playerState()
+            if st and not st.dead and st.grounded then break end
+            task.wait(0.2)
+        end
+        task.wait(1)
+        table.clear(BadEdge)
+    else
+        -- respawn gagal: tetap lanjut ke Drop Point dari posisi sekarang
+        routeDropLog("WARNING: respawn gagal (" .. tostring(AutoPlace.RespawnWhy or "tombol tidak ketemu") .. "); lanjut ke Drop Point dari posisi sekarang.", true)
+    end
+    if not live() then return false end
+
+    -- 2) Jalan ke Drop Point, berdiri di tengah & hadap sama seperti saat ditandai
+    if invCount(RouteDrop.TargetId) < 200 then
+        routeDropLog("Item sudah kurang dari 200 setelah respawn; drop dilewati.", true)
+        return true
+    end
+    RouteDrop.Status = ("Menuju Drop Point (%d,%d)"):format(dx, dy)
+    routeDropLog(("Menuju Drop Point %d,%d dari posisi setelah respawn"):format(dx, dy), true)
+    if not walkTo(dx, dy, 60, live) then
+        RouteDrop.Status = "Gagal mencapai Drop Point"
+        routeDropLog("ERROR: walkTo gagal mencapai Drop Point. Periksa pijakan/jalur dan koordinat.", true)
         return false
     end
-    -- tunggu karakter benar-benar respawn (mati / pindah ke spawn), lalu hidup & berdiri
-    local t0 = os.clock()
-    while live() and os.clock() - t0 < 4 do
-        local st = playerState()
-        if st and (st.dead or (x0 and (math.abs(st.x - x0) > 4 or math.abs(st.y - y0) > 4))) then break end
-        task.wait(0.1)
-    end
-    t0 = os.clock()
-    while live() and os.clock() - t0 < 20 do
-        local st = playerState()
-        if st and not st.dead and st.grounded then break end
-        task.wait(0.2)
-    end
-    task.wait(1)
     if not live() then return false end
-    table.clear(BadEdge)
-    table.clear(RouteDrop.Skip)
-    RouteDrop.Respawns += 1
-    local after = invCount(target)
-    RouteDrop.Dropped += math.max(0, before - after)
-    routeDropLog(("Respawn selesai (#%d): inventori %d -> %d."):format(RouteDrop.Respawns, before, after), true)
-    RouteDrop.Status = "Respawn selesai, lanjut menyusuri jalur"
+    routeDropAlign(dx, dy, live)
+    if not live() then return false end
+    local st = playerState()
+    if not st then RouteDrop.Status = "Posisi karakter tidak terbaca" return false end
+    local facing = (st.facing or 1) < 0 and -1 or 1
+    local zoneX, zoneY = st.x + facing, st.y - 0.475
+    -- Zona drop dikecualikan dari tracking dan collector untuk item target ini.
+    AutoDrop.Zones[#AutoDrop.Zones + 1] = {
+        id = RouteDrop.TargetId, x = zoneX, y = zoneY,
+        dropX = zoneX, dropY = zoneY, world = Guard.worldName(), at = os.clock(),
+    }
+    while #AutoDrop.Zones > 60 do table.remove(AutoDrop.Zones, 1) end
+
+    -- 3) Drop 200
+    RouteDrop.Status = "Drop " .. itemName(RouteDrop.TargetId) .. " x200"
+    local beforeDrop = invCount(RouteDrop.TargetId)
+    routeDropLog(("Memanggil dropItems: item=%d, jumlah inventori=%d, diminta=200"):format(RouteDrop.TargetId, beforeDrop), true)
+    local got, err = dropItems(RouteDrop.TargetId, 200, live, true)
+    RouteDrop.Dropped += got
+    if err or got <= 0 then
+        RouteDrop.Status = "Drop gagal: " .. tostring(err or "tidak ada item yang ter-drop")
+        routeDropLog("ERROR: proses drop gagal: " .. tostring(err or "jumlah drop 0"), true)
+        return false
+    end
+    routeDropLog(("DROP BERHASIL: %s x%d; sisa inventori=%d"):format(itemName(RouteDrop.TargetId), got, invCount(RouteDrop.TargetId)), true)
+    if not live() then return false end
+
+    -- 4) Kembali ke jalur (kalau gagal, sapuan berikutnya mencari jalannya sendiri)
+    RouteDrop.Status = "Kembali ke jalur farming"
+    if resumeX and resumeY then
+        if walkTo(resumeX, resumeY, 60, live) then
+            routeDropLog(("Kembali ke jalur berhasil di (%d,%d)"):format(resumeX, resumeY), true)
+        else
+            routeDropLog("Drop berhasil; tidak bisa kembali ke posisi lama, sapuan berikutnya mencari jalur sendiri.", true)
+        end
+    end
     return true
 end
 
@@ -7879,6 +7961,10 @@ local function routeDropStep()
         routeDropLog("Menunggu konfigurasi: TargetId=" .. tostring(RouteDrop.TargetId) .. ", PlatformId=" .. tostring(RouteDrop.PlatformId))
         return
     end
+    if RouteDrop.DropX < 0 or RouteDrop.DropY < 0 then
+        RouteDrop.Status = "Tentukan Drop Point terlebih dahulu"
+        return
+    end
     if not Refs.World or type(Refs.State) ~= "function" then
         RouteDrop.Status = "Masuk world dan tunggu data karakter"
         routeDropLog("MENUNGGU: referensi world/state belum siap.")
@@ -7894,7 +7980,7 @@ local function routeDropStep()
         return
     end
 
-    -- Sudah penuh: respawn, lalu lanjut
+    -- Sudah penuh: ke Drop Point, drop, lalu balik ke posisi terakhir
     if invCount(RouteDrop.TargetId) >= 200 then
         local s = playerState()
         local x, y
@@ -7930,7 +8016,7 @@ local function routeDropStep()
     task.wait(0.25) -- tunggu balasan server untuk drop terakhir yang tersentuh
     RouteDrop.CollectedStops += 1
 
-    -- Penuh di tengah jalan: respawn lalu lanjut sweep
+    -- Penuh di tengah jalan: ke Drop Point lalu balik ke titik berhenti tadi
     if invCount(RouteDrop.TargetId) >= 200 then
         table.clear(BadEdge) -- jalur yang terputus karena penuh bukan jalur buruk
         local s = playerState()
@@ -10352,6 +10438,27 @@ do (function()
             end,
         })
     end)
+    safe(function()
+        setup:Button({
+            Title = "Tandai Drop Point di posisi sekarang",
+            Desc = "Berdiri di lokasi tujuan dan hadap ke arah drop yang diinginkan (kiri/kanan), lalu klik. Posisi dan arah hadap disimpan, dan dipakai sama persis tiap drop.",
+            Callback = function()
+                local x, y = Auto.here()
+                if not x then
+                    routeDropLog("ERROR: klik tandai Drop Point gagal; Auto.here() tidak memberi koordinat.", true)
+                    notify("Auto Route Drop", "Kamu belum masuk world", 3)
+                    return
+                end
+                RouteDrop.DropX, RouteDrop.DropY = x, y
+                local hs = playerState()
+                RouteDrop.DropFace = (hs and (hs.facing or 1) < 0) and -1 or 1
+                RouteDrop.World = Refs.World
+                if Session.Ready then Config.save(true) end
+                routeDropLog(("Drop Point tersimpan di (%d,%d), hadap=%s, world=%s"):format(x, y, RouteDrop.DropFace < 0 and "kiri" or "kanan", tostring(Guard.worldName())), true)
+                notify("Auto Route Drop", ("Drop Point tersimpan: (%d,%d), hadap %s"):format(x, y, RouteDrop.DropFace < 0 and "kiri" or "kanan"), 4)
+            end,
+        })
+    end)
     local function startRouteDrop(source)
         routeDropLog("PERMINTAAN START diterima dari " .. tostring(source), true)
         local ok, result = pcall(function()
@@ -10359,15 +10466,17 @@ do (function()
             -- Jangan panggil Refs.State/playerState saat callback UI masih berjalan.
             -- Pada beberapa versi client, fungsi state dapat yield; itu membuat log Start
             -- terlihat berhenti tepat setelah "PERMINTAAN START diterima".
-            routeDropLog(("DIAG START PRECHECK: worldRef=%s stateFn=%s target=%s platform=%s guard=%s stateRun=%s clear=%s farmer=%s pabrik=%s build=%s"):
+            routeDropLog(("DIAG START PRECHECK: worldRef=%s stateFn=%s target=%s platform=%s dropX=%s dropY=%s guard=%s stateRun=%s clear=%s farmer=%s pabrik=%s build=%s"):
                 format(tostring(Refs.World ~= nil), tostring(type(Refs.State) == "function"), tostring(RouteDrop.TargetId),
-                    tostring(RouteDrop.PlatformId),
+                    tostring(RouteDrop.PlatformId), tostring(RouteDrop.DropX), tostring(RouteDrop.DropY),
                     tostring(Guard.Mode), tostring(State.Running), tostring(Clear.Running),
                     tostring(Farmer.Running), tostring(Pabrik.Running), tostring(Build.Running)), true)
 
             local reason
             if not Refs.World or type(Refs.State) ~= "function" then reason = "Masuk world dan tunggu data karakter"
             elseif not RouteDrop.TargetId then reason = "Pilih Seed / Block target"
+            elseif type(RouteDrop.DropX) ~= "number" or type(RouteDrop.DropY) ~= "number" or RouteDrop.DropX < 0 or RouteDrop.DropY < 0 then reason = "Tentukan Drop Point terlebih dahulu"
+            elseif type(Refs.Hud) ~= "table" or type(rawget(Refs.Hud, "onDrop")) ~= "function" then reason = "Fungsi drop game belum tersedia"
             elseif State.Running or Clear.Running or Farmer.Running or Pabrik.Running or Build.Running then reason = "Hentikan aktivitas farming lain terlebih dahulu"
             elseif Guard.Mode ~= "idle" then reason = "Penjaga sedang aktif; tunggu sampai idle" end
             if reason then
@@ -10383,10 +10492,10 @@ do (function()
             table.clear(RouteDrop.Skip)
             RouteDrop.CurrentRow = nil
             RouteDrop.Status = "Memulai tracking dari baris paling atas (kanan ke kiri)"
-            routeDropLog(("START BERHASIL: target=%s [%s], platform=%s [%s], world=%s, inv=%d"):format(
+            routeDropLog(("START BERHASIL: target=%s [%s], platform=%s [%s], drop=(%d,%d), world=%s, inv=%d"):format(
                 itemName(RouteDrop.TargetId), tostring(RouteDrop.TargetId),
                 (RouteDrop.PlatformId and itemName(RouteDrop.PlatformId) or "semua block padat"), tostring(RouteDrop.PlatformId),
-                tostring(Guard.worldName()), invCount(RouteDrop.TargetId)), true)
+                RouteDrop.DropX, RouteDrop.DropY, tostring(Guard.worldName()), invCount(RouteDrop.TargetId)), true)
             AutoDrop.On = false
             return true
         end)
@@ -10462,14 +10571,16 @@ do (function()
 
     task.spawn(function()
         while alive() do
+            local dropPoint = RouteDrop.DropX >= 0 and ("(" .. RouteDrop.DropX .. "," .. RouteDrop.DropY .. ")") or "belum ditentukan"
             local txt = table.concat({
                 RouteDrop.Status,
                 "Target: " .. (RouteDrop.TargetId and itemName(RouteDrop.TargetId) or "belum dipilih"),
                 "Pijakan: semua block padat" .. (RouteDrop.PlatformId and (" + " .. itemName(RouteDrop.PlatformId)) or ""),
                 "Arah: " .. RouteDrop.Direction,
-                "Setelah 200 item: respawn otomatis (tanpa Drop Point)",
-                ("Terkumpul (kunjungan): %d | Respawn: %d | Item hilang: %d"):format(RouteDrop.CollectedStops, RouteDrop.Respawns, RouteDrop.Dropped),
+                "Drop Point: " .. dropPoint,
+                ("Terkumpul (kunjungan): %d | Ter-drop: %d"):format(RouteDrop.CollectedStops, RouteDrop.Dropped),
                 ("Log diagnostik: %d baris (klik Salin Log untuk menyalin)"):format(#RouteDrop.Logs),
+                "Drop Point dikecualikan dari tracking / collect target.",
             }, "\n")
             if UI.RouteDropStatus and txt ~= RouteDrop.Shown then
                 RouteDrop.Shown = txt
