@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-16-break-place-chain2"
+Session.Build = "2026-11-17-break-band-zigzag"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -5310,6 +5310,136 @@ local function updateClearStatus()
     end)
 end
 
+-- ===== AUTO BREAK BLOCK (mode pita) =====
+-- Pita = satu baris block target (mis. blue star wallpaper) yang duduk di atas Wooden Platform.
+-- Mulai dari pita PALING BAWAH di ujung kanan, karakter berdiri di platform DI ATAS pita itu
+-- dan bergerak ke kiri sambil memecah 5 tile sekaligus (hanya pita ini). Kalau pita habis /
+-- sampai ujung, naik SATU tingkat ke pita berikutnya dan menyapu ke arah sebaliknya (zig-zag).
+local function bandRowTargets(w, Y)
+    local out = {}
+    if Y < 0 or Y >= w.h then return out end
+    local W = w.w
+    local now = os.clock()
+    for x = 0, W - 1 do
+        local idx = Y * W + x
+        if not skipped(Clear.Skip, idx, now) and clearLayerAt(x, Y) then
+            out[#out + 1] = { x = x, y = Y, idx = idx }
+        end
+    end
+    return out
+end
+
+-- Tile pita yang terjangkau dari posisi sekarang (hanya baris Y)
+local function bandInReach(s, Y, dir)
+    local w = Refs.World
+    local W = w.w
+    local R = punchReach() - 0.08
+    local now = os.clock()
+    local list = {}
+    for tx = math.max(0, floor(s.x - R - 0.5)), math.min(floor(s.x + R + 0.5), W - 1) do
+        if stateReaches(s, tx, Y, R) then
+            local idx = Y * W + tx
+            if not skipped(Clear.Skip, idx, now) and clearLayerAt(tx, Y) then
+                if canWorkAt(tx, Y) then
+                    list[#list + 1] = { x = tx, y = Y, idx = idx, support = false }
+                else
+                    skipTile(Clear.Skip, idx, 300)
+                    Clear.Why.izin += 1
+                end
+            end
+        end
+    end
+    table.sort(list, function(a, b) return a.x * dir < b.x * dir end)
+    return list
+end
+
+-- Satu langkah. true = ada yang dikerjakan, false = tidak ada pita tersisa.
+local function clearBandStep(w, s)
+    local W, H = w.w, w.h
+    local B = Clear.Band
+    -- 1) pilih pita aktif: pita paling bawah dulu, lalu naik satu tingkat tiap kali pita habis
+    if not B or #bandRowTargets(w, B.row) == 0 then
+        local prev = B
+        if prev and State.WorldBreakCollect then
+            Clear.Status = "Ambil drop pita..."
+            Move.fetchDrops(function() return Clear.Running end, 120, function(d)
+                return d.y >= prev.row - 0.5 and d.y < prev.row + 2.5
+            end, 20)
+            releaseInput()
+            if not Clear.Running or not alive() then return true end
+        end
+        local newRow
+        for Y = (prev and prev.row - 1 or H - 1), 0, -1 do
+            if #bandRowTargets(w, Y) > 0 then newRow = Y break end
+        end
+        if not newRow and prev then
+            for Y = H - 1, prev.row, -1 do
+                if #bandRowTargets(w, Y) > 0 then newRow = Y break end
+            end
+        end
+        if not newRow then return false end
+        B = { row = newRow, dir = prev and -prev.dir or -1 }
+        Clear.Band = B
+        Clear.Status = ("Pita baru baris %d, arah %s"):format(newRow, B.dir == -1 and "kanan→kiri" or "kiri→kanan")
+    end
+    local Y, dir = B.row, B.dir
+    Clear.TopRow, Clear.Dir, Clear.DirRow = Y, dir, Y
+
+    -- 2) pecahkan yang terjangkau (hanya pita ini; pita lain dibiarkan)
+    local list = bandInReach(s, Y, dir)
+    if #list > 0 then
+        clearBreakList(list, s)
+        return true
+    end
+
+    -- 3) geser ke tengah 5 tile berikutnya sesuai arah
+    local rem = bandRowTargets(w, Y)
+    if #rem == 0 then return true end
+    table.sort(rem, function(a, b) return a.x * dir < b.x * dir end)
+    local t0 = rem[1]
+    local group, minx, maxx = {}, math.huge, -math.huge
+    for _, t in ipairs(rem) do
+        local d = (t.x - t0.x) * dir
+        if d >= 0 and d <= 4 then
+            group[#group + 1] = t
+            if t.x < minx then minx = t.x end
+            if t.x > maxx then maxx = t.x end
+        end
+    end
+    local midF = (minx + maxx) / 2
+    local mid = dir > 0 and floor(midF) or math.ceil(midF)
+    local sx, sy = startNode(s)
+    local R = punchReach() - 0.08
+    -- berdiri di platform DI ATAS pita (baris Y-2); cadangan: di platform pita itu sendiri (baris Y)
+    for _, standRow in ipairs({ Y - 2, Y }) do
+        if standRow >= 0 then
+            for _, cxm in ipairs({ mid, mid - dir, mid + dir, mid - 2 * dir }) do
+                local fake = { x = cxm + 0.5, y = standRow + 0.975 }
+                local n = 0
+                for _, t in ipairs(group) do
+                    if stateReaches(fake, t.x, t.y, R) then n += 1 end
+                end
+                if n > 0 and not (sx == cxm and sy == standRow) then
+                    local goal = { [standRow * W + cxm] = true }
+                    local path = astar(sx, sy, goal, cxm, standRow, 0.5, false)
+                    if path and #path > 0 then
+                        Clear.Dbg = ("pita y=%d arah=%d: berdiri (%d,%d) kena=%d"):format(Y, dir, cxm, standRow, n)
+                        Clear.Status = ("Ke (%d,%d) untuk pecah %d tile"):format(cxm, standRow, n)
+                        followPath(path)
+                        releaseInput()
+                        return true
+                    end
+                end
+            end
+        end
+    end
+    -- tidak ada posisi berdiri yang bisa dicapai: lewati kelompok ini sebentar
+    for _, t in ipairs(group) do skipTile(Clear.Skip, t.idx, 30) end
+    Clear.Why.nopath += 1
+    Clear.Dbg = ("pita y=%d: tanpa jalan ke posisi berdiri, kelompok dilewati"):format(Y)
+    return true
+end
+
 local function clearLoop()
     local idle, lastUi, lastCount = 0, 0, -10
     while Clear.Running and alive() do
@@ -5390,6 +5520,11 @@ local function clearLoop()
             table.clear(BadEdge)
             Reach = nil
             if not waitAuto(2000) then break end
+            continue
+        end
+
+        if Clear.TargetId then
+            if not clearBandStep(w, s) then task.wait(0.2) end
             continue
         end
 
@@ -5539,6 +5674,7 @@ local function startClear(targetId)
     Clear.Remaining = -1
     Clear.TopRow = -1
     Clear.DirRow, Clear.Dir = nil, nil
+    Clear.Band = nil
     Clear.Status = "Mulai..."
     if not targetId then Clear.TargetLayer = nil end
     Clear.TargetId = targetId
