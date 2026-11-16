@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-17-break-band-zigzag3"
+Session.Build = "2026-11-17-place-on-platform"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -797,7 +797,7 @@ local AutoPlace = {
     Running = false,
     Loop = true,            -- block habis / area penuh: tunggu & lanjut, tidak berhenti
     RespawnOnEmpty = false, -- block habis: matikan karakter agar respawn
-    Chain = true,           -- gabung: Auto Break selesai -> respawn -> Auto Place -> semua terpasang -> respawn -> selesai
+    Chain = false,          -- gabung: Auto Break selesai -> respawn -> Auto Place -> semua terpasang -> respawn -> selesai
     FromChain = false,      -- (runtime) Auto Place sedang berjalan dari rantai Auto Break
     BlockId = nil,
     PlaceMs = 150,
@@ -5518,7 +5518,6 @@ local function clearLoop()
                 end
                 local wasBreakBlock = Clear.TargetId ~= nil
                 stopClear(Clear.TargetId and ("Selesai. Semua " .. itemName(Clear.TargetId) .. " yang bisa dipecah sudah habis.") or "World sudah bersih!")
-                if wasBreakBlock then Auto.afterAutoBreakBlockDone(true) end
                 return
             end
             idle += 1
@@ -5526,10 +5525,6 @@ local function clearLoop()
                 local wasBreakBlock = Clear.TargetId ~= nil
                 stopClear(("Selesai. Sisa %d tile tidak bisa dijangkau / dipecah"):format(remaining))
                 -- masih ada block target: Auto Place TIDAK dijalankan
-                if wasBreakBlock and AutoPlace.Chain then
-                    notify("Auto Break Block",
-                        ("Masih ada %d block target yang belum hancur, Auto Place tidak dijalankan"):format(remaining), 6)
-                end
                 return
             end
             Clear.Status = ("Sisa %d tile dilewati, coba ulang (%d/3)..."):format(remaining, idle)
@@ -6671,6 +6666,20 @@ function AutoPlace.buildArea()
     return set, n, "otomatis"
 end
 
+-- Hanya tile TEPAT DI ATAS Wooden Platform (baris y, platform di baris y+1)
+local apPlatCache = {}
+local function apOnPlatform(x, y)
+    local below = tileAt("fg", x, y + 1)
+    if not below or below == 0 then return false end
+    local v = apPlatCache[below]
+    if v == nil then
+        local n = string.lower(tostring(itemName(below) or ""))
+        v = n:find("wooden platform", 1, true) ~= nil
+        apPlatCache[below] = v
+    end
+    return v
+end
+
 local function apTargets()
     local w = Refs.World
     local P = AutoPlace
@@ -6685,7 +6694,7 @@ local function apTargets()
     for idx in pairs(P.Allowed) do
         if not skipped(P.Skip, idx, now) then
             local x, y = idx % W, floor(idx / W)
-            if tileAt(layer, x, y) == 0 and not (layer == "fg" and s and x == bx and (y == by or y == by - 1)) then
+            if apOnPlatform(x, y) and tileAt(layer, x, y) == 0 and not (layer == "fg" and s and x == bx and (y == by or y == by - 1)) then
                 out[#out + 1] = { x = x, y = y, idx = idx }
             end
         end
@@ -7212,7 +7221,7 @@ Auto.stopPlace = function() if AutoPlace.Running then stopPlace("Dihentikan") en
 
 -- Auto Break Block selesai (habis / tidak terjangkau lagi): respawn dulu, lalu lanjutkan Auto Place.
 function Auto.afterAutoBreakBlockDone(verified)
-    if not AutoPlace.Chain then return end
+    do return end -- Auto Break Block berdiri sendiri, tidak lagi menjalankan Auto Place
     if not verified then return end -- hanya dari jalur "semua block target sudah habis"
     if Clear.Running then return end
     if Auto.AutoBreakThenPlaceBusy then return end
@@ -10416,17 +10425,6 @@ do
             Desc = "Block habis / area penuh: tunggu dan lanjut otomatis, tidak berhenti",
             Value = AutoPlace.Loop,
             Callback = function(on) AutoPlace.Loop = on and true or false end,
-        })
-    end)
-    safe(function()
-        ctl:Toggle({
-            Title = "Gabung dengan Auto Break Block",
-            Desc = "Auto Break selesai (block target habis) -> respawn -> Auto Place jalan sendiri -> semua tile terpasang -> respawn -> selesai. Block yang ditaruh = yang dipilih di sini",
-            Value = AutoPlace.Chain,
-            Callback = function(on)
-                AutoPlace.Chain = on and true or false
-                if Session.Ready then Config.save(true) end
-            end,
         })
     end)
     safe(function()
