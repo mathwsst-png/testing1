@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-16-route-drop-respawn-then-drop"
+Session.Build = "2026-11-16-break-place-chain"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -797,6 +797,8 @@ local AutoPlace = {
     Running = false,
     Loop = true,            -- block habis / area penuh: tunggu & lanjut, tidak berhenti
     RespawnOnEmpty = false, -- block habis: matikan karakter agar respawn
+    Chain = true,           -- gabung: Auto Break selesai -> respawn -> Auto Place -> semua terpasang -> respawn -> selesai
+    FromChain = false,      -- (runtime) Auto Place sedang berjalan dari rantai Auto Break
     BlockId = nil,
     PlaceMs = 150,
     P1X = -1, P1Y = -1, P2X = -1, P2Y = -1, -- pojok area manual (opsional)
@@ -1880,7 +1882,7 @@ Config.add("Farm", State, {
     "CollectAround", "CollectRadius", "CollectMode", "FastPunch", "FastPunchHits", "FastPunchMs",
     "WorldBreakId", "WorldBreakCollect",
 })
-Config.add("AutoPlace", AutoPlace, { "BlockId", "PlaceMs", "P1X", "P1Y", "P2X", "P2Y", "Loop", "RespawnOnEmpty" })
+Config.add("AutoPlace", AutoPlace, { "BlockId", "PlaceMs", "P1X", "P1Y", "P2X", "P2Y", "Loop", "RespawnOnEmpty", "Chain" })
 Config.add("RouteDrop", RouteDrop, { "TargetId", "PlatformId", "DropX", "DropY", "DropFace", "Direction" })
 -- Pindahkan nilai default lama. Nilai yang dipilih di versi baru tetap berlaku.
 if (Config.Data.Version == nil or Config.Data.Version == 1) and State.AfterBreakMs == 300 then
@@ -6801,6 +6803,28 @@ function AutoPlace.respawn()
     return (pcall(function() ch:BreakJoints() end))
 end
 
+-- respawn lalu tunggu sampai karakter benar-benar respawn, hidup, dan berdiri. true kalau berhasil ditekan.
+function AutoPlace.respawnAndWait(live)
+    live = live or function() return alive() end
+    local p0 = playerState()
+    local x0, y0 = p0 and p0.x, p0 and p0.y
+    if not AutoPlace.respawn() then return false end
+    local t0 = os.clock()
+    while live() and os.clock() - t0 < 4 do
+        local st = playerState()
+        if st and (st.dead or (x0 and (math.abs(st.x - x0) > 4 or math.abs(st.y - y0) > 4))) then break end
+        task.wait(0.1)
+    end
+    t0 = os.clock()
+    while live() and os.clock() - t0 < 20 do
+        local st = playerState()
+        if st and not st.dead and st.grounded then break end
+        task.wait(0.2)
+    end
+    task.wait(1)
+    return true
+end
+
 -- dump UI untuk dicari manual: tombol Respawn + kandidat tombol menu pojok kanan atas
 function AutoPlace.scanUI()
     local out = {}
@@ -6910,7 +6934,16 @@ local function placeLoop()
             if Auto.updatePlaceStatus then Auto.updatePlaceStatus() end
         end
         if #P.List == 0 then
-            if P.Loop then
+            if P.FromChain then
+                -- rantai Auto Break -> Auto Place: semua sudah terpasang, respawn lalu selesai
+                P.Status = "Semua tile terpasang: respawn..."
+                if Auto.updatePlaceStatus then Auto.updatePlaceStatus() end
+                releaseInput()
+                local okr = AutoPlace.respawnAndWait(function() return P.Running and alive() end)
+                stopPlace(okr and ("Selesai: semua terpasang (%d), respawn selesai"):format(P.Placed)
+                    or ("Selesai: semua terpasang (%d), tapi respawn gagal: %s"):format(P.Placed, tostring(AutoPlace.RespawnWhy or "tombol tidak ketemu")))
+                return
+            elseif P.Loop then
                 P.Status = "Area penuh, menunggu tile kosong (loop aktif)..."
                 if Auto.updatePlaceStatus then Auto.updatePlaceStatus() end
                 table.clear(P.Skip)
@@ -6953,6 +6986,7 @@ end
 
 stopPlace = function(reason)
     AutoPlace.Running = false
+    AutoPlace.FromChain = false
     Move.Homing = false
     Move.HomingLive = nil
     releaseInput()
@@ -7006,19 +7040,21 @@ Auto.stopPlace = function() if AutoPlace.Running then stopPlace("Dihentikan") en
 
 -- Auto Break Block selesai (habis / tidak terjangkau lagi): respawn dulu, lalu lanjutkan Auto Place.
 function Auto.afterAutoBreakBlockDone()
+    if not AutoPlace.Chain then return end
     if Auto.AutoBreakThenPlaceBusy then return end
     Auto.AutoBreakThenPlaceBusy = true
     task.spawn(function()
         local ok, err = pcall(function()
             task.wait(0.3)
-            local respawned = AutoPlace.respawn()
+            local respawned = AutoPlace.respawnAndWait(function() return alive() end)
             notify("Auto Break Block",
-                respawned and "Selesai, respawn ditekan, lanjut Auto Place..."
-                    or "Selesai, tapi respawn gagal (tombol Respawn tidak ketemu). Auto Place tidak dijalankan.",
+                respawned and "Selesai, respawn selesai, lanjut Auto Place..."
+                    or ("Selesai, tapi respawn gagal (%s). Auto Place tidak dijalankan."):format(tostring(AutoPlace.RespawnWhy or "tombol Respawn tidak ketemu")),
                 5)
-            if respawned then
-                task.wait(3)
-                if not AutoPlace.Running then AutoPlace.start() end
+            if respawned and not AutoPlace.Running then
+                AutoPlace.FromChain = true
+                AutoPlace.start()
+                if not AutoPlace.Running then AutoPlace.FromChain = false end
             end
         end)
         if not ok then warn("[n4th] afterAutoBreakBlockDone error: " .. tostring(err)) end
@@ -10174,7 +10210,7 @@ do
             Desc = "Mulai berdiri di dalam area. Karakter berjalan dan menaruh block di semua tile kosong dalam area",
             Value = false,
             Callback = function(on)
-                if on then AutoPlace.start() else Auto.stopPlace() end
+                if on then AutoPlace.FromChain = false AutoPlace.start() else Auto.stopPlace() end
                 Auto.updatePlaceStatus()
             end,
         })
@@ -10206,6 +10242,17 @@ do
             Desc = "Block habis / area penuh: tunggu dan lanjut otomatis, tidak berhenti",
             Value = AutoPlace.Loop,
             Callback = function(on) AutoPlace.Loop = on and true or false end,
+        })
+    end)
+    safe(function()
+        ctl:Toggle({
+            Title = "Gabung dengan Auto Break Block",
+            Desc = "Auto Break selesai (block target habis) -> respawn -> Auto Place jalan sendiri -> semua tile terpasang -> respawn -> selesai. Block yang ditaruh = yang dipilih di sini",
+            Value = AutoPlace.Chain,
+            Callback = function(on)
+                AutoPlace.Chain = on and true or false
+                if Session.Ready then Config.save(true) end
+            end,
         })
     end)
     safe(function()
