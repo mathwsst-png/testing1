@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-22-batch5"
+Session.Build = "2026-11-22-batch5-window"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -5358,6 +5358,8 @@ end
 -- pukulan ke tile pita yang paling dekat dengan badan. Tidak berhenti di tengah 5 tile.
 -- Satu pass = satu arah. Per segmen 20 tile: bolak-balik sampai segmen habis, lalu segmen berikutnya.
 Clear.RunMode = false   -- false = Auto Break seperti awal (berdiri di tengah, tidak lari); true = mode lari per segmen
+Clear.BatchMs = 70       -- jeda antar putaran pukul 5 tile (ms). Makin kecil makin cepat; naikkan kalau server menolak
+Clear.BandZigzag = true  -- true = baris berikutnya arah sebaliknya (hemat jalan); false = selalu arah yang sama
 Clear.BatchGapMs = 0    -- jeda antar tile dalam satu putaran (0 = semua tile dipukul di frame yang sama)
 Clear.RunSeg = 20      -- panjang segmen lari (tile)
 Clear.RunMaxPass = 24  -- batas lintasan per segmen sebelum dilewati (tile bandel)
@@ -5481,7 +5483,7 @@ end
 function Clear.breakBatch(list, s0)
     local footY = floor(s0.y - 0.475)
     local R = punchReach() - 0.08
-    local pace = math.max(State.FastPunchMs or 190, 10)
+    local pace = math.max(Clear.BatchMs or 70, 10) -- jeda antar putaran (ms), terpisah dari slider Fast Punch
     local active, hitsBy, done, maxHits = {}, {}, 0, 6
     for _, t in ipairs(list) do
         active[#active + 1] = t
@@ -5530,7 +5532,8 @@ function Clear.breakBatch(list, s0)
         active = nextActive
         if #active > 0 then
             Clear.Status = ("Pukul %d tile barengan"):format(#active)
-            if not waitAuto(pace) then return done end
+            task.wait(pace / 1000)
+            if not autoOn() then return done end
         end
     end
     return done
@@ -5562,7 +5565,7 @@ local function clearBandStep(w, s)
             end
         end
         if not newRow then return false end
-        B = { row = newRow, dir = prev and -prev.dir or -1 }
+        B = { row = newRow, dir = prev and (Clear.BandZigzag and -prev.dir or prev.dir) or -1 }
         Clear.Band = B
         Clear.Status = ("Pita baru baris %d, arah %s"):format(newRow, B.dir == -1 and "kanan→kiri" or "kiri→kanan")
     end
@@ -5642,38 +5645,54 @@ local function clearBandStep(w, s)
     end
     table.sort(rem, function(a, b) return a.x * dir < b.x * dir end)
     local t0 = rem[1]
-    local group, minx, maxx = {}, math.huge, -math.huge
-    for _, t in ipairs(rem) do
-        local d = (t.x - t0.x) * dir
-        if d >= 0 and d <= 4 then
-            group[#group + 1] = t
-            if t.x < minx then minx = t.x end
-            if t.x > maxx then maxx = t.x end
+    -- Jendela 5 tile yang TETAP: posisi berdiri = tengah jendela, tidak bergeser walau tile mulai hancur.
+    -- Jendela baru (5 tile berikutnya) baru dibuat setelah jendela lama kosong. Tidak pernah mundur.
+    local win = B.Win
+    if win then
+        local any = false
+        for _, t in ipairs(rem) do
+            local d = (t.x - win.from) * dir
+            if d >= 0 and d <= 4 then any = true break end
         end
+        if not any then win = nil end
     end
-    local midF = (minx + maxx) / 2
-    local mid = dir > 0 and floor(midF) or math.ceil(midF)
+    if not win then
+        win = { from = t0.x }
+        B.Win = win
+    end
+    local group = {}
+    for _, t in ipairs(rem) do
+        local d = (t.x - win.from) * dir
+        if d >= 0 and d <= 4 then group[#group + 1] = t end
+    end
+    local cxm0 = math.max(0, math.min(W - 1, win.from + 2 * dir))
     local sx, sy = startNode(s)
     local R = punchReach() - 0.08
-    -- berdiri di platform DI ATAS pita (baris Y-2); cadangan: di platform pita itu sendiri (baris Y)
-    for _, standRow in ipairs({ Y - 2 }) do
-        if standRow >= 0 then
-            for _, cxm in ipairs({ mid, mid - dir, mid + dir, mid - 2 * dir }) do
-                local fake = { x = cxm + 0.5, y = standRow + 0.975 }
-                local n = 0
-                for _, t in ipairs(group) do
-                    if stateReaches(fake, t.x, t.y, R) then n += 1 end
+    -- berdiri di platform DI ATAS pita (baris Y-2)
+    local standRow = Y - 2
+    if standRow >= 0 then
+        for _, cxm in ipairs({ cxm0, cxm0 - dir, cxm0 + dir }) do
+            local fake = { x = cxm + 0.5, y = standRow + 0.975 }
+            local n = 0
+            for _, t in ipairs(group) do
+                if stateReaches(fake, t.x, t.y, R) then n += 1 end
+            end
+            if n > 0 then
+                if sx == cxm and sy == standRow then
+                    -- sudah di posisi tapi tile tidak bisa dipukul (izin / terskip): lewati jendela ini, JANGAN geser-geser
+                    for _, t in ipairs(group) do skipTile(Clear.Skip, t.idx, 20) end
+                    B.Win = nil
+                    Clear.Dbg = ("pita y=%d: jendela %d-%d dilewati (tile tak bisa dipukul)"):format(Y, win.from, win.from + 4 * dir)
+                    return true
                 end
-                if n > 0 and not (sx == cxm and sy == standRow) then
-                    local goal = { [standRow * W + cxm] = true }
-                    local path = astar(sx, sy, goal, cxm, standRow, 0.5, false)
-                    if path and #path > 0 then
-                        Clear.Dbg = ("pita y=%d arah=%d: berdiri (%d,%d) kena=%d"):format(Y, dir, cxm, standRow, n)
-                        Clear.Status = ("Ke (%d,%d) untuk pecah %d tile"):format(cxm, standRow, n)
-                        followPath(path)
-                        releaseInput()
-                        return true
-                    end
+                local goal = { [standRow * W + cxm] = true }
+                local path = astar(sx, sy, goal, cxm, standRow, 0.5, false)
+                if path and #path > 0 then
+                    Clear.Dbg = ("pita y=%d arah=%d: berdiri (%d,%d) kena=%d"):format(Y, dir, cxm, standRow, n)
+                    Clear.Status = ("Ke (%d,%d) untuk pecah %d tile"):format(cxm, standRow, n)
+                    followPath(path)
+                    releaseInput()
+                    return true
                 end
             end
         end
