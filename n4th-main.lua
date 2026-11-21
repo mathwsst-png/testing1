@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-22-batch5-window"
+Session.Build = "2026-11-17-place-corner-right"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -5353,192 +5353,6 @@ local function bandInReach(s, Y, dir)
     return list
 end
 
--- ===== SAPUAN LARI (pengganti kelompok 5 tile) =====
--- Karakter berlari menyusuri baris berdiri (Y-2) dari ujung ke ujung pita sambil menahan
--- pukulan ke tile pita yang paling dekat dengan badan. Tidak berhenti di tengah 5 tile.
--- Satu pass = satu arah. Per segmen 20 tile: bolak-balik sampai segmen habis, lalu segmen berikutnya.
-Clear.RunMode = false   -- false = Auto Break seperti awal (berdiri di tengah, tidak lari); true = mode lari per segmen
-Clear.BatchMs = 70       -- jeda antar putaran pukul 5 tile (ms). Makin kecil makin cepat; naikkan kalau server menolak
-Clear.BandZigzag = true  -- true = baris berikutnya arah sebaliknya (hemat jalan); false = selalu arah yang sama
-Clear.BatchGapMs = 0    -- jeda antar tile dalam satu putaran (0 = semua tile dipukul di frame yang sama)
-Clear.RunSeg = 20      -- panjang segmen lari (tile)
-Clear.RunMaxPass = 24  -- batas lintasan per segmen sebelum dilewati (tile bandel)
-
-function Clear.bandRunPass(w, Y, d, minx, maxx)
-    local W = w.w
-    local standRow = Y - 2
-    if standRow < 0 then return false end
-    local startX = d > 0 and minx or maxx
-    local endX = d > 0 and maxx or minx
-    local R = punchReach() - 0.08
-    local pace = math.max(State.FastPunchMs or 190, 10) / 1000
-
-    local s = playerState()
-    if not s or s.dead then return false end
-
-    -- 1) ke posisi awal (ujung pita) kalau belum di sana
-    local sx, sy = startNode(s)
-    if sy ~= standRow or abs(s.x - (startX + 0.5)) > 1.2 then
-        local goal = { [standRow * W + startX] = true }
-        local path = astar(sx, sy, goal, startX, standRow, 0.5, false)
-        if not path then return false end
-        Clear.Status = ("Ke ujung pita (%d,%d)"):format(startX, standRow)
-        if #path > 0 then
-            if not followPath(path) then releaseInput() return false end
-        elseif sy == standRow then
-            if not execWalk(startX, standRow) then releaseInput() return false end
-        else
-            return false
-        end
-        releaseInput()
-        s = playerState()
-        if not s or s.dead then return false end
-        local _, nowRow = startNode(s)
-        if nowRow ~= standRow then return false end
-    end
-
-    -- 2) lari sambil hit tahan
-    Clear.Status = ("Lari pita baris %d arah %s"):format(Y, d == -1 and "kanan→kiri" or "kiri→kanan")
-    local t0 = os.clock()
-    local limit = 4 + abs(endX - startX) * 0.7
-    local lastX, lastMove = s.x, os.clock()
-    local airSince = nil
-    local nextHit = 0
-    local ok = true
-    while frame() do
-        if not Clear.Running or not alive() then ok = false break end
-        if Clear.TargetId and raymanOn() then
-            stopClear("Lepas Rayman's Fist dulu agar block lain tidak ikut terkena.")
-            ok = false
-            break
-        end
-        local c = playerState()
-        if not c or c.dead then ok = false break end
-        local now = os.clock()
-
-        -- keluar dari jalur (jatuh / pindah baris) -> batalkan pass ini
-        if c.grounded then
-            airSince = nil
-            if floor(c.y - 0.475) ~= standRow then ok = false break end
-        else
-            airSince = airSince or now
-            if now - airSince > 0.5 then ok = false break end
-        end
-        -- sudah lewat ujung pita
-        if (c.x - (endX + 0.5)) * d >= 0 then break end
-        -- macet (nabrak / tidak bergerak)
-        if abs(c.x - lastX) > 0.05 then
-            lastX, lastMove = c.x, now
-        elseif now - lastMove > 0.8 then
-            ok = false
-            break
-        end
-        if now - t0 > limit then ok = false break end
-
-        -- lari terus
-        AutoInput.left = d < 0
-        AutoInput.right = d > 0
-
-        -- hit tile pita terdekat dengan badan, tiap jeda Fast Punch
-        if now >= nextHit then
-            nextHit = now + pace
-            local cand = {}
-            for tx = math.max(0, floor(c.x - R - 0.5)), math.min(W - 1, floor(c.x + R + 0.5)) do
-                if stateReaches(c, tx, Y, R) then
-                    local idx = Y * W + tx
-                    if not skipped(Clear.Skip, idx, now) and clearLayerAt(tx, Y) then
-                        cand[#cand + 1] = { x = tx, idx = idx, dist = abs(tx + 0.5 - c.x) }
-                    end
-                end
-            end
-            table.sort(cand, function(a, b) return a.dist < b.dist end)
-            for _, t in ipairs(cand) do
-                if canWorkAt(t.x, Y) then
-                    local layer, id = clearLayerAt(t.x, Y)
-                    local r = tryBreak(t.x, Y, Clear.TargetLayer == "bg", Clear.TargetId, Clear.TargetLayer)
-                    if r == nil then
-                        skipTile(Clear.Skip, t.idx, 8)
-                    elseif r == "broke" then
-                        Clear.Broken += 1
-                        Clear.Status = "Pecah " .. itemName(id) .. " (" .. t.x .. "," .. Y .. ")"
-                        BreakTimes[t.idx] = (BreakTimes[t.idx] or 0) + 1
-                        if BreakTimes[t.idx] > 6 then skipTile(Clear.Skip, t.idx, 120) end
-                    else
-                        Clear.Status = "Pukul " .. itemName(id) .. " (" .. t.x .. "," .. Y .. ")"
-                    end
-                    break
-                else
-                    skipTile(Clear.Skip, t.idx, 300)
-                    Clear.Why.izin += 1
-                end
-            end
-        end
-    end
-    releaseInput()
-    return ok
-end
-
--- Pukul semua tile di jangkauan (maks 5) BARENGAN: tiap putaran, tiap tile dapat 1 pukulan,
--- lalu jeda Fast Punch, ulangi sampai semua hancur (bukan satu tile sampai hancur baru tile berikutnya).
-function Clear.breakBatch(list, s0)
-    local footY = floor(s0.y - 0.475)
-    local R = punchReach() - 0.08
-    local pace = math.max(Clear.BatchMs or 70, 10) -- jeda antar putaran (ms), terpisah dari slider Fast Punch
-    local active, hitsBy, done, maxHits = {}, {}, 0, 6
-    for _, t in ipairs(list) do
-        active[#active + 1] = t
-        local _, id = clearLayerAt(t.x, t.y)
-        if id then maxHits = math.max(maxHits, hitsNeeded(id) * 3 + 6) end
-    end
-    while Clear.Running and alive() and #active > 0 do
-        if Clear.TargetId and raymanOn() then
-            stopClear("Lepas Rayman's Fist dulu agar block lain tidak ikut terkena.")
-            return done
-        end
-        local s = playerState()
-        if not s or s.dead or not s.grounded or floor(s.y - 0.475) ~= footY then break end
-        local nextActive = {}
-        for _, t in ipairs(active) do
-            if not Clear.Running or not alive() then return done end
-            if stateReaches(s, t.x, t.y, R) then
-                local layer, id = clearLayerAt(t.x, t.y)
-                if layer then
-                    local r = tryBreak(t.x, t.y, Clear.TargetLayer == "bg", Clear.TargetId, Clear.TargetLayer)
-                    if r == nil then
-                        skipTile(Clear.Skip, t.idx, 8)
-                    elseif r == "broke" then
-                        Clear.Broken += 1
-                        done += 1
-                        Clear.Status = "Pecah " .. itemName(id) .. " (" .. t.x .. "," .. t.y .. ")"
-                        BreakTimes[t.idx] = (BreakTimes[t.idx] or 0) + 1
-                        if BreakTimes[t.idx] > 6 then
-                            skipTile(Clear.Skip, t.idx, 120)
-                        elseif clearLayerAt(t.x, t.y) then
-                            hitsBy[t.idx] = 0
-                            nextActive[#nextActive + 1] = t
-                        end
-                    else
-                        hitsBy[t.idx] = (hitsBy[t.idx] or 0) + 1
-                        if hitsBy[t.idx] > maxHits then
-                            skipTile(Clear.Skip, t.idx, 5)
-                        else
-                            nextActive[#nextActive + 1] = t
-                        end
-                    end
-                    if Clear.BatchGapMs > 0 and not waitAuto(Clear.BatchGapMs) then return done end
-                end
-            end
-        end
-        active = nextActive
-        if #active > 0 then
-            Clear.Status = ("Pukul %d tile barengan"):format(#active)
-            task.wait(pace / 1000)
-            if not autoOn() then return done end
-        end
-    end
-    return done
-end
-
 -- Satu langkah. true = ada yang dikerjakan, false = tidak ada pita tersisa.
 local function clearBandStep(w, s)
     local W, H = w.w, w.h
@@ -5565,63 +5379,12 @@ local function clearBandStep(w, s)
             end
         end
         if not newRow then return false end
-        B = { row = newRow, dir = prev and (Clear.BandZigzag and -prev.dir or prev.dir) or -1 }
+        B = { row = newRow, dir = prev and -prev.dir or -1 }
         Clear.Band = B
         Clear.Status = ("Pita baru baris %d, arah %s"):format(newRow, B.dir == -1 and "kanan→kiri" or "kiri→kanan")
     end
     local Y, dir = B.row, B.dir
     Clear.TopRow, Clear.Dir, Clear.DirRow = Y, dir, Y
-
-    -- 1b) sapuan lari per segmen: ambil Clear.RunSeg tile (default 20) mulai dari tile target pertama
-    -- sesuai arah, lari bolak-balik sambil hit tahan sampai semua tile segmen itu habis,
-    -- lalu pindah ke segmen 20 tile berikutnya.
-    if Clear.RunMode and not B.RunOff then
-        local rem = bandRowTargets(w, Y, false)
-        if #rem > 0 then
-            table.sort(rem, function(a, b) return a.x * dir < b.x * dir end)
-            if not B.SegFrom then
-                B.SegFrom = rem[1].x
-                B.SegPass, B.SegFail = 0, 0
-            end
-            local minx, maxx, n = math.huge, -math.huge, 0
-            for _, t in ipairs(rem) do
-                local off = (t.x - B.SegFrom) * dir
-                if off >= 0 and off < Clear.RunSeg then
-                    n += 1
-                    if t.x < minx then minx = t.x end
-                    if t.x > maxx then maxx = t.x end
-                end
-            end
-            if n == 0 then
-                -- segmen ini sudah habis: mulai segmen berikutnya dari tile target pertama yang tersisa
-                B.SegFrom = rem[1].x
-                B.SegPass, B.SegFail = 0, 0
-                return true
-            end
-            if B.SegPass >= Clear.RunMaxPass then
-                -- terlalu lama (tile bandel): lewati sisa segmen sementara, lanjut segmen berikutnya
-                for _, t in ipairs(rem) do
-                    local off = (t.x - B.SegFrom) * dir
-                    if off >= 0 and off < Clear.RunSeg then skipTile(Clear.Skip, t.idx, 60) end
-                end
-                B.SegFrom = nil
-                return true
-            end
-            local d = (B.SegPass % 2 == 0) and dir or -dir
-            Clear.Dbg = ("segmen %d tile (kolom %d-%d), sisa %d, lintasan %d"):format(Clear.RunSeg, minx, maxx, n, B.SegPass + 1)
-            local okRun = Clear.bandRunPass(w, Y, d, minx, maxx)
-            releaseInput()
-            if okRun then
-                B.SegPass += 1
-                B.SegFail = 0
-            else
-                B.SegFail += 1
-                if B.SegFail >= 2 then B.RunOff = true end -- gagal terus: pakai cara lama
-                task.wait(0.2)
-            end
-            return true
-        end
-    end
 
     -- 2) pecahkan yang terjangkau (hanya pita ini; pita lain dibiarkan)
     -- WAJIB sudah berdiri di tingkat yang benar (badan di baris Y-2) sebelum memukul;
@@ -5630,7 +5393,7 @@ local function clearBandStep(w, s)
     local list = (curRow == Y - 2) and bandInReach(s, Y, dir) or {}
     if #list > 0 then
         Clear.BandStall = 0
-        Clear.breakBatch(list, s)
+        clearBreakList(list, s)
         return true
     end
 
@@ -5645,54 +5408,38 @@ local function clearBandStep(w, s)
     end
     table.sort(rem, function(a, b) return a.x * dir < b.x * dir end)
     local t0 = rem[1]
-    -- Jendela 5 tile yang TETAP: posisi berdiri = tengah jendela, tidak bergeser walau tile mulai hancur.
-    -- Jendela baru (5 tile berikutnya) baru dibuat setelah jendela lama kosong. Tidak pernah mundur.
-    local win = B.Win
-    if win then
-        local any = false
-        for _, t in ipairs(rem) do
-            local d = (t.x - win.from) * dir
-            if d >= 0 and d <= 4 then any = true break end
-        end
-        if not any then win = nil end
-    end
-    if not win then
-        win = { from = t0.x }
-        B.Win = win
-    end
-    local group = {}
+    local group, minx, maxx = {}, math.huge, -math.huge
     for _, t in ipairs(rem) do
-        local d = (t.x - win.from) * dir
-        if d >= 0 and d <= 4 then group[#group + 1] = t end
+        local d = (t.x - t0.x) * dir
+        if d >= 0 and d <= 4 then
+            group[#group + 1] = t
+            if t.x < minx then minx = t.x end
+            if t.x > maxx then maxx = t.x end
+        end
     end
-    local cxm0 = math.max(0, math.min(W - 1, win.from + 2 * dir))
+    local midF = (minx + maxx) / 2
+    local mid = dir > 0 and floor(midF) or math.ceil(midF)
     local sx, sy = startNode(s)
     local R = punchReach() - 0.08
-    -- berdiri di platform DI ATAS pita (baris Y-2)
-    local standRow = Y - 2
-    if standRow >= 0 then
-        for _, cxm in ipairs({ cxm0, cxm0 - dir, cxm0 + dir }) do
-            local fake = { x = cxm + 0.5, y = standRow + 0.975 }
-            local n = 0
-            for _, t in ipairs(group) do
-                if stateReaches(fake, t.x, t.y, R) then n += 1 end
-            end
-            if n > 0 then
-                if sx == cxm and sy == standRow then
-                    -- sudah di posisi tapi tile tidak bisa dipukul (izin / terskip): lewati jendela ini, JANGAN geser-geser
-                    for _, t in ipairs(group) do skipTile(Clear.Skip, t.idx, 20) end
-                    B.Win = nil
-                    Clear.Dbg = ("pita y=%d: jendela %d-%d dilewati (tile tak bisa dipukul)"):format(Y, win.from, win.from + 4 * dir)
-                    return true
+    -- berdiri di platform DI ATAS pita (baris Y-2); cadangan: di platform pita itu sendiri (baris Y)
+    for _, standRow in ipairs({ Y - 2 }) do
+        if standRow >= 0 then
+            for _, cxm in ipairs({ mid, mid - dir, mid + dir, mid - 2 * dir }) do
+                local fake = { x = cxm + 0.5, y = standRow + 0.975 }
+                local n = 0
+                for _, t in ipairs(group) do
+                    if stateReaches(fake, t.x, t.y, R) then n += 1 end
                 end
-                local goal = { [standRow * W + cxm] = true }
-                local path = astar(sx, sy, goal, cxm, standRow, 0.5, false)
-                if path and #path > 0 then
-                    Clear.Dbg = ("pita y=%d arah=%d: berdiri (%d,%d) kena=%d"):format(Y, dir, cxm, standRow, n)
-                    Clear.Status = ("Ke (%d,%d) untuk pecah %d tile"):format(cxm, standRow, n)
-                    followPath(path)
-                    releaseInput()
-                    return true
+                if n > 0 and not (sx == cxm and sy == standRow) then
+                    local goal = { [standRow * W + cxm] = true }
+                    local path = astar(sx, sy, goal, cxm, standRow, 0.5, false)
+                    if path and #path > 0 then
+                        Clear.Dbg = ("pita y=%d arah=%d: berdiri (%d,%d) kena=%d"):format(Y, dir, cxm, standRow, n)
+                        Clear.Status = ("Ke (%d,%d) untuk pecah %d tile"):format(cxm, standRow, n)
+                        followPath(path)
+                        releaseInput()
+                        return true
+                    end
                 end
             end
         end
@@ -9827,10 +9574,6 @@ Auto.releaseInput = releaseInput
 Auto.BadEdge = BadEdge
 Auto.ClearFail = ClearFail
 Auto.resetReach = function() Reach = nil end
-Auto.playerState = playerState
-Auto.punchReach = punchReach
-Auto.stateReaches = stateReaches
-Auto.canWorkAt = canWorkAt
 end)() end -- do (gerak otomatis)
 
 ---------------------------------------------------------------------
@@ -11333,159 +11076,6 @@ do (function()
         end
     end)
 end)() end
-
--- ===== CHAMPION PUNCH (tiruan efek Champion's Glove) =====
--- Ini BUKAN item: hanya meniru gaya pakainya (tarik sebentar, lepas, kena beberapa tile sejajar di depan)
--- memakai pukulan biasa game. Server tetap menilai jangkauan, jadi hanya tile dalam jangkauan
--- pukul normal yang ikut kena. Tidak ada animasi emas / terbang seperti item aslinya.
-do
-    -- fungsi ini hidup di dalam blok gerak otomatis, jadi diambil lewat tabel Auto
-    local playerState, punchReach, stateReaches, canWorkAt = Auto.playerState, Auto.punchReach, Auto.stateReaches, Auto.canWorkAt
-    local floor = math.floor
-    local C = { Auto = false, Hold = false, ChargeMs = 700, Tiles = 2, Key = Enum.KeyCode.F, Token = 0, Last = "-" }
-    Session.Champ = C
-
-    -- Lepas: pukul semua tile sejajar di depan (1..Tiles) yang masih ada & terjangkau
-    function C.fire()
-        local s = playerState()
-        if not s or s.dead or not Refs.Punch then return 0 end
-        local dir = (s.facing or 1) >= 0 and 1 or -1
-        local y = floor(s.y - 0.475)
-        local x0 = floor(s.x)
-        local R = punchReach() - 0.08
-        local hit = 0
-        for i = 1, C.Tiles do
-            local tx = x0 + dir * i
-            if breakableAt(tx, y) and stateReaches(s, tx, y, R) and canWorkAt(tx, y) then
-                if tryBreak(tx, y, State.BreakBackground) then hit += 1 end
-            end
-        end
-        C.Last = ("kena %d tile arah %s"):format(hit, dir > 0 and "kanan" or "kiri")
-        return hit
-    end
-
-    -- Mode otomatis: tarik (ChargeMs) lalu lepas, terus diulang
-    function C.autoLoop(token)
-        while C.Auto and C.Token == token and alive() do
-            local t0 = os.clock()
-            while os.clock() - t0 < C.ChargeMs / 1000 do
-                if not (C.Auto and C.Token == token and alive()) then return end
-                task.wait(0.03)
-            end
-            C.fire()
-        end
-    end
-
-    -- Mode tahan tombol (keyboard): tahan tombol = tarik, lepas = tembak (kalau ditahan >= ChargeMs)
-    local downAt = nil
-    table.insert(Connections, UserInputService.InputBegan:Connect(function(input, gp)
-        if gp or not C.Hold or input.KeyCode ~= C.Key then return end
-        downAt = os.clock()
-    end))
-    table.insert(Connections, UserInputService.InputEnded:Connect(function(input)
-        if input.KeyCode ~= C.Key or not downAt then return end
-        local held = os.clock() - downAt
-        downAt = nil
-        if C.Hold and held >= C.ChargeMs / 1000 then task.spawn(C.fire) end
-    end))
-
-    -- Diagnosa: tembak sekali lalu catat tiap langkah (kenapa kena / tidak kena)
-    function C.diagnose()
-        local out = {}
-        local function add(t) out[#out + 1] = t end
-        add("== DIAGNOSA CHAMPION PUNCH == build " .. tostring(Session.Build) .. " | " .. os.date("%H:%M:%S"))
-        add(("Auto=%s Hold=%s ChargeMs=%d Tiles=%d"):format(tostring(C.Auto), tostring(C.Hold), C.ChargeMs, C.Tiles))
-        add("Refs.Punch ada: " .. tostring(Refs.Punch ~= nil) .. " | Refs.World ada: " .. tostring(Refs.World ~= nil)
-            .. " | Refs.State ada: " .. tostring(Refs.State ~= nil))
-        local s = playerState()
-        if not s then add("playerState: NIL (karakter belum terbaca / belum di world)") return table.concat(out, "\n") end
-        add(("posisi x=%.3f y=%.3f facing=%s grounded=%s dead=%s"):format(s.x, s.y, tostring(s.facing), tostring(s.grounded), tostring(s.dead)))
-        local dir = (s.facing or 1) >= 0 and 1 or -1
-        local y = floor(s.y - 0.475)
-        local x0 = floor(s.x)
-        local R = punchReach() - 0.08
-        add(("baris badan y=%d kolom x0=%d arah=%d jangkauan R=%.2f"):format(y, x0, dir, R))
-        for i = -1, C.Tiles + 1 do
-            local tx = x0 + dir * i
-            local fg = tileAt("fg", tx, y)
-            local bg = tileAt("bg", tx, y)
-            add(("  i=%d tile(%d,%d): fg=%s%s bg=%s | breakable=%s reach=%s izin=%s"):format(
-                i, tx, y, tostring(fg), (fg and fg ~= 0) and (" (" .. itemName(fg) .. ")") or "", tostring(bg),
-                tostring(breakableAt(tx, y)), tostring(stateReaches(s, tx, y, R)), tostring(canWorkAt(tx, y))))
-        end
-        -- baris di bawah (kalau block ada di bawah kaki, bukan sejajar badan)
-        for i = 1, C.Tiles do
-            local tx = x0 + dir * i
-            local fg = tileAt("fg", tx, y + 1)
-            add(("  [1 baris di bawah] tile(%d,%d): fg=%s%s"):format(tx, y + 1, tostring(fg), (fg and fg ~= 0) and (" (" .. itemName(fg) .. ")") or ""))
-        end
-        local hit = C.fire()
-        add("fire() mengembalikan: " .. tostring(hit) .. " | " .. tostring(C.Last))
-        add("Aksi terakhir script: " .. tostring(State.LastAction))
-        return table.concat(out, "\n")
-    end
-
-    local ctl = box(FarmTab, "Champion Punch (tiruan)", false)
-    safe(function()
-        ctl:Paragraph({
-            Title = "Tentang fitur ini",
-            Desc = "Meniru gaya Champion's Glove: tarik sebentar lalu lepas, memukul tile sejajar di depan. Memakai pukulan biasa game, bukan item aslinya. Hanya tile dalam jangkauan pukul normal yang kena.",
-        })
-    end)
-    safe(function()
-        ctl:Toggle({
-            Title = "Auto tarik & lepas",
-            Desc = "Otomatis menarik lalu melepas berulang ke arah hadap karakter",
-            Value = false,
-            Callback = function(on)
-                C.Token += 1
-                C.Auto = on == true
-                if C.Auto then
-                    if not Refs.Punch then
-                        notify("Champion Punch", "Fungsi pukul game belum ketemu. Tekan 'Hubungkan ke game'", 4)
-                    end
-                    task.spawn(C.autoLoop, C.Token)
-                end
-            end,
-        })
-    end)
-    safe(function()
-        ctl:Toggle({
-            Title = "Mode tahan tombol F",
-            Desc = "Tahan F untuk menarik, lepas F untuk menembak (khusus keyboard)",
-            Value = false,
-            Callback = function(on) C.Hold = on == true end,
-        })
-    end)
-    safe(function()
-        ctl:Button({
-            Title = "Tes tembak + diagnosa (salin ke clipboard)",
-            Desc = "Menembak sekali, mencatat kenapa kena / tidak kena, lalu menyalin hasilnya",
-            Callback = function()
-                task.spawn(function()
-                    local ok, text = pcall(C.diagnose)
-                    text = tostring(text)
-                    print(text)
-                    local clip = setclipboard or toclipboard or (syn and syn.write_clipboard)
-                    if type(clip) == "function" then pcall(clip, text) end
-                    notify("Champion Punch", ok and "Diagnosa selesai: sudah disalin ke clipboard & console (F9)" or ("Error: " .. text), 6)
-                end)
-            end,
-        })
-    end)
-    addNumber(ctl, {
-        Title = "Lama tarik (ms)",
-        Desc = "Waktu menarik sebelum dilepas",
-        Min = 200, Max = 2000, Step = 50, Default = C.ChargeMs,
-        Callback = function(v) C.ChargeMs = math.floor(v) end,
-    })
-    addNumber(ctl, {
-        Title = "Jarak (tile)",
-        Desc = "Jumlah tile di depan yang dipukul (item asli: 2)",
-        Min = 1, Max = 3, Step = 1, Default = C.Tiles,
-        Callback = function(v) C.Tiles = math.floor(v) end,
-    })
-end
 
 -- ===== TAB: CLEAR WORLD =====
 local ClearTab = makeTab("Clear World", "eraser", "farm")
@@ -14045,239 +13635,6 @@ function Session.diagnose()
     return text
 end
 
--- SCAN "Champion's Glove": cari item bernama champion's glove (apa pun cara/lokasinya) lalu salin hasilnya.
--- Sumber yang dicek: ItemDB game, nilai teks apa pun di dalam entri item, nama objek ReplicatedStorage,
--- dan tabel lain di memori (getgc). Semua hasil ditulis seperti log dan disalin ke clipboard.
-function Session.scanChampionGlove()
-    local out = {}
-    local function add(t) out[#out + 1] = t end
-    local function norm(v)
-        v = tostring(v):lower()
-        v = v:gsub("\226\128\153", "'"):gsub("\226\128\152", "'"):gsub("`", "'")
-        return v
-    end
-    local function hitKind(text)
-        local t = norm(text)
-        local flat = t:gsub("[^%a]", "")
-        if flat:find("championsglove", 1, true) or flat:find("championglove", 1, true) then return "EXACT" end
-        if t:find("champion", 1, true) then return "champion" end
-        if t:find("glove", 1, true) then return "glove" end
-        return nil
-    end
-    local function dump(v, depth, seen)
-        if type(v) ~= "table" then return tostring(v) end
-        seen = seen or {}
-        if seen[v] or depth > 2 then return "{...}" end
-        seen[v] = true
-        local keys = {}
-        for k in pairs(v) do keys[#keys + 1] = k end
-        table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
-        local parts = {}
-        for i, k in ipairs(keys) do
-            if i > 40 then parts[#parts + 1] = "..." break end
-            parts[#parts + 1] = tostring(k) .. "=" .. dump(v[k], depth + 1, seen)
-        end
-        return "{" .. table.concat(parts, ", ") .. "}"
-    end
-
-    add("== SCAN CHAMPION'S GLOVE == build " .. tostring(Session.Build) .. " | " .. os.date("%Y-%m-%d %H:%M:%S"))
-    add("Validasi sumber ItemDB: " .. tostring(Session.isRealItemDB and Session.isRealItemDB(Session.ItemDBSource) or false))
-
-    -- 1) ItemDB
-    local src = Session.ItemDBSource
-    local exact, partial, kinds, modLike = {}, {}, {}, {}
-    local total = 0
-    if type(src) == "table" then
-        for id, it in pairs(src) do
-            total += 1
-            local label, fields = nil, {}
-            if type(it) == "string" then
-                label = it
-                local h = hitKind(it)
-                if h then fields[#fields + 1] = { "(nilai)", it, h } end
-            elseif type(it) == "table" then
-                local k = tostring(rawget(it, "kind") or rawget(it, "type") or "?")
-                kinds[k] = (kinds[k] or 0) + 1
-                for key, val in pairs(it) do
-                    if type(val) == "string" then
-                        local h = hitKind(val)
-                        if h then fields[#fields + 1] = { tostring(key), val, h } end
-                        if norm(key):find("mod", 1, true) or norm(val):find("^mod") then
-                            modLike[#modLike + 1] = { id = id, key = tostring(key), val = val }
-                        end
-                    end
-                end
-                if norm(k):find("mod", 1, true) then modLike[#modLike + 1] = { id = id, key = "kind", val = k } end
-                label = (function()
-                    for _, nk in ipairs({ "name", "Name", "displayName", "DisplayName", "title", "label" }) do
-                        local v = rawget(it, nk)
-                        if type(v) == "string" and v ~= "" then return v end
-                    end
-                end)()
-            end
-            if #fields > 0 then
-                local best = "partial"
-                for _, f in ipairs(fields) do if f[3] == "EXACT" then best = "EXACT" end end
-                local rec = { id = id, name = label, item = it, fields = fields }
-                if best == "EXACT" then exact[#exact + 1] = rec else partial[#partial + 1] = rec end
-            end
-        end
-        add(("ItemDB: %d entri dibaca"):format(total))
-    else
-        add("ItemDB: TIDAK TERSEDIA (Session.ItemDBSource bukan tabel). Tekan 'Hubungkan ke game' lalu coba lagi.")
-    end
-    local function byId(a, b) return (tonumber(a.id) or 0) < (tonumber(b.id) or 0) end
-    table.sort(exact, byId)
-    table.sort(partial, byId)
-
-    add("")
-    add(("--- COCOK PERSIS champion's glove: %d ---"):format(#exact))
-    if #exact == 0 then add("TIDAK ADA di ItemDB.") end
-    for _, r in ipairs(exact) do
-        add(("#%s nama=%s"):format(tostring(r.id), tostring(r.name)))
-        for _, f in ipairs(r.fields) do add(("   cocok di field %s = %s"):format(f[1], f[2])) end
-        add("   data: " .. dump(r.item, 0))
-    end
-
-    add("")
-    add(("--- COCOK SEBAGIAN (mengandung 'champion' atau 'glove'): %d ---"):format(#partial))
-    for i, r in ipairs(partial) do
-        if i > 60 then add("... (dipotong, " .. (#partial - 60) .. " lagi)") break end
-        local why = {}
-        for _, f in ipairs(r.fields) do why[#why + 1] = f[1] .. "=" .. f[2] end
-        add(("#%s nama=%s | %s"):format(tostring(r.id), tostring(r.name), table.concat(why, "; ")))
-    end
-
-    -- jenis item (untuk lihat apakah ada kategori 'mod')
-    local klist = {}
-    for k, n in pairs(kinds) do klist[#klist + 1] = k .. "=" .. n end
-    table.sort(klist)
-    add("")
-    add("--- JENIS ITEM (kind) di ItemDB ---")
-    add(#klist > 0 and table.concat(klist, ", ") or "(kosong)")
-    add(("--- ITEM BERTANDA 'mod' di ItemDB: %d ---"):format(#modLike))
-    table.sort(modLike, byId)
-    for i, m in ipairs(modLike) do
-        if i > 40 then add("... (dipotong, " .. (#modLike - 40) .. " lagi)") break end
-        add(("#%s %s=%s | nama=%s"):format(tostring(m.id), m.key, m.val, itemName(m.id)))
-    end
-
-    -- 2) nama objek di ReplicatedStorage
-    add("")
-    add("--- OBJEK ReplicatedStorage yang namanya cocok ---")
-    local rsHits = 0
-    pcall(function()
-        for _, o in ipairs(ReplicatedStorage:GetDescendants()) do
-            if hitKind(o.Name) then
-                rsHits += 1
-                if rsHits <= 25 then add(("%s [%s]"):format(o:GetFullName(), o.ClassName)) end
-            end
-        end
-    end)
-    if rsHits == 0 then add("tidak ada") end
-
-    -- 3) tabel lain di memori (getgc), dibatasi waktu
-    add("")
-    add("--- TABEL LAIN DI MEMORI (getgc) yang berisi teks cocok ---")
-    if type(getgc) == "function" then
-        local okGc, list = pcall(getgc, true)
-        local gcHits, checked, t0 = 0, 0, os.clock()
-        if okGc and type(list) == "table" then
-            for _, t in ipairs(list) do
-                if os.clock() - t0 > 2.5 or gcHits >= 15 then break end
-                if type(t) == "table" and t ~= src and t ~= out then
-                    checked += 1
-                    local n = 0
-                    for k, v in next, t do
-                        n += 1
-                        if n > 300 then break end
-                        if type(v) == "string" and #v < 80 and hitKind(v) == "EXACT" then
-                            gcHits += 1
-                            add(("tabel[%s] = %s"):format(tostring(k), v))
-                            break
-                        end
-                    end
-                end
-            end
-        end
-        add(("(%d tabel dicek, %d cocok persis)"):format(checked, gcHits))
-    else
-        add("getgc tidak tersedia di executor ini")
-    end
-
-    add("")
-    local exactCount = #exact
-    add(exactCount > 0 and ("KESIMPULAN: ADA %d item cocok persis."):format(exactCount)
-        or "KESIMPULAN: tidak ada item bernama champion's glove di ItemDB client (cek bagian cocok sebagian di atas).")
-
-    local text = table.concat(out, "\n")
-    print(text)
-    local clip = setclipboard or toclipboard or (syn and syn.write_clipboard)
-    local copied = false
-    if type(clip) == "function" then copied = pcall(clip, text) end
-    return text, copied
-end
-
--- SCAN EQUIP: cari cara game memakai (equip) item di slot tangan, tanpa mengubah apa pun.
--- Hanya membaca nama fungsi / remote / field, lalu menyalin hasilnya ke clipboard.
-function Session.scanEquip()
-    local out = {}
-    local function add(t) out[#out + 1] = t end
-    local GLOVE_ID = 20026
-    local words = { "equip", "wear", "cloth", "wield", "hand", "slot", "glove", "fist", "ray", "outfit", "unequip", "use" }
-    local function interesting(name)
-        local n = tostring(name):lower()
-        for _, w in ipairs(words) do if n:find(w, 1, true) then return true end end
-        return false
-    end
-    local function listKeys(title, t, cap)
-        add("--- " .. title .. " ---")
-        if type(t) ~= "table" then add("(bukan tabel: " .. typeof(t) .. ")") return end
-        local keys, hot = {}, {}
-        for k, v in pairs(t) do
-            local line = tostring(k) .. " [" .. typeof(v) .. "]"
-            if type(v) ~= "table" and type(v) ~= "function" and type(v) ~= "userdata" then line = line .. " = " .. tostring(v) end
-            keys[#keys + 1] = line
-            if interesting(k) then hot[#hot + 1] = line end
-        end
-        table.sort(keys); table.sort(hot)
-        add(("total %d | mengandung kata kunci equip/slot/glove/ray dll: %d"):format(#keys, #hot))
-        for i, l in ipairs(hot) do if i > 40 then add("   ...") break end add("   * " .. l) end
-        add("semua:")
-        for i, l in ipairs(keys) do if i > (cap or 120) then add("   ... (" .. (#keys - (cap or 120)) .. " lagi)") break end add("   " .. l) end
-    end
-
-    add("== SCAN EQUIP == build " .. tostring(Session.Build) .. " | " .. os.date("%Y-%m-%d %H:%M:%S"))
-    add(("Champion's Glove #%d ada di tas kamu: %s"):format(GLOVE_ID, tostring(invCount(GLOVE_ID))))
-    local it = ItemDB[GLOVE_ID]
-    if type(it) == "table" then add("kind=" .. tostring(it.kind) .. " slot=" .. tostring(it.slot) .. " rarity=" .. tostring(it.rarity)) end
-
-    listKeys("Net (modul jaringan game)", Net, 80)
-    if type(Net) == "table" then
-        listKeys("Net.CALLS", rawget(Net, "CALLS"), 200)
-        listKeys("Net.EVENTS", rawget(Net, "EVENTS"), 200)
-    end
-    listKeys("Modul Inventory", InventoryModule, 60)
-    if Refs.Inv then
-        listKeys("Objek tas (Refs.Inv)", Refs.Inv, 60)
-        local ok, mt = pcall(getmetatable, Refs.Inv)
-        if ok and type(mt) == "table" then
-            listKeys("Metatable tas", mt, 40)
-            if type(rawget(mt, "__index")) == "table" then listKeys("Metode tas (__index)", rawget(mt, "__index"), 80) end
-        end
-    end
-    local okS, st = pcall(Refs.State)
-    if okS then listKeys("State karakter (Refs.State)", st, 80) end
-    listKeys("World (field mengandung ray/fist/equip dll)", Refs.World, 150)
-
-    local text = table.concat(out, "\n")
-    print(text)
-    local clip = setclipboard or toclipboard or (syn and syn.write_clipboard)
-    local copied = false
-    if type(clip) == "function" then copied = pcall(clip, text) end
-    return text, copied
-end
-
 local function reconnect(show)
     -- Jangan pernah mempertahankan sumber ItemDB yang gagal validasi.
     if not Session.isRealItemDB(Session.ItemDBSource) then Session.ItemDBMissing = true end
@@ -14327,44 +13684,6 @@ safe(function()
             task.spawn(function()
                 local ok, res = pcall(Session.diagnose)
                 notify("Diagnosa", ok and "Selesai: sudah disalin ke clipboard & dicetak di console (F9)" or tostring(res), 6)
-            end)
-        end,
-    })
-end)
-
-safe(function()
-    Box.ConnMain:Button({
-        Title = "Scan Champion's Glove (salin ke clipboard)",
-        Desc = "Cari item bernama Champion's Glove di ItemDB & memori game, lalu langsung salin hasilnya sebagai log",
-        Callback = function()
-            task.spawn(function()
-                local ok, text, copied = pcall(Session.scanChampionGlove)
-                if not ok then
-                    notify("Scan Champion's Glove", "Error: " .. tostring(text), 6)
-                elseif copied then
-                    notify("Scan Champion's Glove", "Selesai: hasil sudah disalin ke clipboard & dicetak di console (F9)", 6)
-                else
-                    notify("Scan Champion's Glove", "Selesai, tapi clipboard tidak tersedia. Hasil ada di console (F9)", 6)
-                end
-            end)
-        end,
-    })
-end)
-
-safe(function()
-    Box.ConnMain:Button({
-        Title = "Scan Equip Item (salin ke clipboard)",
-        Desc = "Cari cara game memakai item di slot tangan + cek apakah Champion's Glove ada di tasmu. Hanya membaca, tidak mengubah apa pun",
-        Callback = function()
-            task.spawn(function()
-                local ok, text, copied = pcall(Session.scanEquip)
-                if not ok then
-                    notify("Scan Equip", "Error: " .. tostring(text), 6)
-                elseif copied then
-                    notify("Scan Equip", "Selesai: hasil sudah disalin ke clipboard & dicetak di console (F9)", 6)
-                else
-                    notify("Scan Equip", "Selesai, tapi clipboard tidak tersedia. Hasil ada di console (F9)", 6)
-                end
             end)
         end,
     })
