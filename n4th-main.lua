@@ -9746,6 +9746,10 @@ Auto.releaseInput = releaseInput
 Auto.BadEdge = BadEdge
 Auto.ClearFail = ClearFail
 Auto.resetReach = function() Reach = nil end
+Auto.playerState = playerState
+Auto.punchReach = punchReach
+Auto.stateReaches = stateReaches
+Auto.canWorkAt = canWorkAt
 end)() end -- do (gerak otomatis)
 
 ---------------------------------------------------------------------
@@ -11254,6 +11258,9 @@ end)() end
 -- memakai pukulan biasa game. Server tetap menilai jangkauan, jadi hanya tile dalam jangkauan
 -- pukul normal yang ikut kena. Tidak ada animasi emas / terbang seperti item aslinya.
 do
+    -- fungsi ini hidup di dalam blok gerak otomatis, jadi diambil lewat tabel Auto
+    local playerState, punchReach, stateReaches, canWorkAt = Auto.playerState, Auto.punchReach, Auto.stateReaches, Auto.canWorkAt
+    local floor = math.floor
     local C = { Auto = false, Hold = false, ChargeMs = 700, Tiles = 2, Key = Enum.KeyCode.F, Token = 0, Last = "-" }
     Session.Champ = C
 
