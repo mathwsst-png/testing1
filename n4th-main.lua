@@ -5353,6 +5353,126 @@ local function bandInReach(s, Y, dir)
     return list
 end
 
+-- ===== SAPUAN LARI (pengganti kelompok 5 tile) =====
+-- Karakter berlari menyusuri baris berdiri (Y-2) dari ujung ke ujung pita sambil menahan
+-- pukulan ke tile pita yang paling dekat dengan badan. Tidak berhenti di tengah 5 tile.
+-- Satu pass = satu arah. Bolak-balik = 2 pass. Ulang Clear.RunTrips kali bolak-balik.
+Clear.RunTrips = 2 -- ubah angka ini untuk jumlah bolak-balik
+
+function Clear.bandRunPass(w, Y, d, minx, maxx)
+    local W = w.w
+    local standRow = Y - 2
+    if standRow < 0 then return false end
+    local startX = d > 0 and minx or maxx
+    local endX = d > 0 and maxx or minx
+    local R = punchReach() - 0.08
+    local pace = math.max(State.FastPunchMs or 190, 10) / 1000
+
+    local s = playerState()
+    if not s or s.dead then return false end
+
+    -- 1) ke posisi awal (ujung pita) kalau belum di sana
+    local sx, sy = startNode(s)
+    if sy ~= standRow or abs(s.x - (startX + 0.5)) > 1.2 then
+        local goal = { [standRow * W + startX] = true }
+        local path = astar(sx, sy, goal, startX, standRow, 0.5, false)
+        if not path then return false end
+        Clear.Status = ("Ke ujung pita (%d,%d)"):format(startX, standRow)
+        if #path > 0 then
+            if not followPath(path) then releaseInput() return false end
+        elseif sy == standRow then
+            if not execWalk(startX, standRow) then releaseInput() return false end
+        else
+            return false
+        end
+        releaseInput()
+        s = playerState()
+        if not s or s.dead then return false end
+        local _, nowRow = startNode(s)
+        if nowRow ~= standRow then return false end
+    end
+
+    -- 2) lari sambil hit tahan
+    Clear.Status = ("Lari pita baris %d arah %s"):format(Y, d == -1 and "kanan→kiri" or "kiri→kanan")
+    local t0 = os.clock()
+    local limit = 4 + abs(endX - startX) * 0.7
+    local lastX, lastMove = s.x, os.clock()
+    local airSince = nil
+    local nextHit = 0
+    local ok = true
+    while frame() do
+        if not Clear.Running or not alive() then ok = false break end
+        if Clear.TargetId and raymanOn() then
+            stopClear("Lepas Rayman's Fist dulu agar block lain tidak ikut terkena.")
+            ok = false
+            break
+        end
+        local c = playerState()
+        if not c or c.dead then ok = false break end
+        local now = os.clock()
+
+        -- keluar dari jalur (jatuh / pindah baris) -> batalkan pass ini
+        if c.grounded then
+            airSince = nil
+            if floor(c.y - 0.475) ~= standRow then ok = false break end
+        else
+            airSince = airSince or now
+            if now - airSince > 0.5 then ok = false break end
+        end
+        -- sudah lewat ujung pita
+        if (c.x - (endX + 0.5)) * d >= 0 then break end
+        -- macet (nabrak / tidak bergerak)
+        if abs(c.x - lastX) > 0.05 then
+            lastX, lastMove = c.x, now
+        elseif now - lastMove > 0.8 then
+            ok = false
+            break
+        end
+        if now - t0 > limit then ok = false break end
+
+        -- lari terus
+        AutoInput.left = d < 0
+        AutoInput.right = d > 0
+
+        -- hit tile pita terdekat dengan badan, tiap jeda Fast Punch
+        if now >= nextHit then
+            nextHit = now + pace
+            local cand = {}
+            for tx = math.max(0, floor(c.x - R - 0.5)), math.min(W - 1, floor(c.x + R + 0.5)) do
+                if stateReaches(c, tx, Y, R) then
+                    local idx = Y * W + tx
+                    if not skipped(Clear.Skip, idx, now) and clearLayerAt(tx, Y) then
+                        cand[#cand + 1] = { x = tx, idx = idx, dist = abs(tx + 0.5 - c.x) }
+                    end
+                end
+            end
+            table.sort(cand, function(a, b) return a.dist < b.dist end)
+            for _, t in ipairs(cand) do
+                if canWorkAt(t.x, Y) then
+                    local layer, id = clearLayerAt(t.x, Y)
+                    local r = tryBreak(t.x, Y, Clear.TargetLayer == "bg", Clear.TargetId, Clear.TargetLayer)
+                    if r == nil then
+                        skipTile(Clear.Skip, t.idx, 8)
+                    elseif r == "broke" then
+                        Clear.Broken += 1
+                        Clear.Status = "Pecah " .. itemName(id) .. " (" .. t.x .. "," .. Y .. ")"
+                        BreakTimes[t.idx] = (BreakTimes[t.idx] or 0) + 1
+                        if BreakTimes[t.idx] > 6 then skipTile(Clear.Skip, t.idx, 120) end
+                    else
+                        Clear.Status = "Pukul " .. itemName(id) .. " (" .. t.x .. "," .. Y .. ")"
+                    end
+                    break
+                else
+                    skipTile(Clear.Skip, t.idx, 300)
+                    Clear.Why.izin += 1
+                end
+            end
+        end
+    end
+    releaseInput()
+    return ok
+end
+
 -- Satu langkah. true = ada yang dikerjakan, false = tidak ada pita tersisa.
 local function clearBandStep(w, s)
     local W, H = w.w, w.h
@@ -5385,6 +5505,31 @@ local function clearBandStep(w, s)
     end
     local Y, dir = B.row, B.dir
     Clear.TopRow, Clear.Dir, Clear.DirRow = Y, dir, Y
+
+    -- 1b) sapuan lari: bolak-balik Clear.RunTrips kali sambil hit tahan (lalu sisa dibereskan cara lama)
+    if not B.RunOff and (B.RunPass or 0) < Clear.RunTrips * 2 then
+        local all = bandRowTargets(w, Y, true)
+        if #all > 0 then
+            local minx, maxx = math.huge, -math.huge
+            for _, t in ipairs(all) do
+                if t.x < minx then minx = t.x end
+                if t.x > maxx then maxx = t.x end
+            end
+            local pass = B.RunPass or 0
+            local d = (pass % 2 == 0) and dir or -dir
+            local okRun = Clear.bandRunPass(w, Y, d, minx, maxx)
+            releaseInput()
+            if okRun then
+                B.RunPass = pass + 1
+                B.RunFail = 0
+            else
+                B.RunFail = (B.RunFail or 0) + 1
+                if B.RunFail >= 2 then B.RunOff = true end -- gagal terus: pakai cara lama
+                task.wait(0.2)
+            end
+            return true
+        end
+    end
 
     -- 2) pecahkan yang terjangkau (hanya pita ini; pita lain dibiarkan)
     -- WAJIB sudah berdiri di tingkat yang benar (badan di baris Y-2) sebelum memukul;
