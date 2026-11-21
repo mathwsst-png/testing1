@@ -11301,6 +11301,42 @@ do
         if C.Hold and held >= C.ChargeMs / 1000 then task.spawn(C.fire) end
     end))
 
+    -- Diagnosa: tembak sekali lalu catat tiap langkah (kenapa kena / tidak kena)
+    function C.diagnose()
+        local out = {}
+        local function add(t) out[#out + 1] = t end
+        add("== DIAGNOSA CHAMPION PUNCH == build " .. tostring(Session.Build) .. " | " .. os.date("%H:%M:%S"))
+        add(("Auto=%s Hold=%s ChargeMs=%d Tiles=%d"):format(tostring(C.Auto), tostring(C.Hold), C.ChargeMs, C.Tiles))
+        add("Refs.Punch ada: " .. tostring(Refs.Punch ~= nil) .. " | Refs.World ada: " .. tostring(Refs.World ~= nil)
+            .. " | Refs.State ada: " .. tostring(Refs.State ~= nil))
+        local s = playerState()
+        if not s then add("playerState: NIL (karakter belum terbaca / belum di world)") return table.concat(out, "\n") end
+        add(("posisi x=%.3f y=%.3f facing=%s grounded=%s dead=%s"):format(s.x, s.y, tostring(s.facing), tostring(s.grounded), tostring(s.dead)))
+        local dir = (s.facing or 1) >= 0 and 1 or -1
+        local y = floor(s.y - 0.475)
+        local x0 = floor(s.x)
+        local R = punchReach() - 0.08
+        add(("baris badan y=%d kolom x0=%d arah=%d jangkauan R=%.2f"):format(y, x0, dir, R))
+        for i = -1, C.Tiles + 1 do
+            local tx = x0 + dir * i
+            local fg = tileAt("fg", tx, y)
+            local bg = tileAt("bg", tx, y)
+            add(("  i=%d tile(%d,%d): fg=%s%s bg=%s | breakable=%s reach=%s izin=%s"):format(
+                i, tx, y, tostring(fg), (fg and fg ~= 0) and (" (" .. itemName(fg) .. ")") or "", tostring(bg),
+                tostring(breakableAt(tx, y)), tostring(stateReaches(s, tx, y, R)), tostring(canWorkAt(tx, y))))
+        end
+        -- baris di bawah (kalau block ada di bawah kaki, bukan sejajar badan)
+        for i = 1, C.Tiles do
+            local tx = x0 + dir * i
+            local fg = tileAt("fg", tx, y + 1)
+            add(("  [1 baris di bawah] tile(%d,%d): fg=%s%s"):format(tx, y + 1, tostring(fg), (fg and fg ~= 0) and (" (" .. itemName(fg) .. ")") or ""))
+        end
+        local hit = C.fire()
+        add("fire() mengembalikan: " .. tostring(hit) .. " | " .. tostring(C.Last))
+        add("Aksi terakhir script: " .. tostring(State.LastAction))
+        return table.concat(out, "\n")
+    end
+
     local ctl = box(FarmTab, "Champion Punch (tiruan)", false)
     safe(function()
         ctl:Paragraph({
@@ -11331,6 +11367,22 @@ do
             Desc = "Tahan F untuk menarik, lepas F untuk menembak (khusus keyboard)",
             Value = false,
             Callback = function(on) C.Hold = on == true end,
+        })
+    end)
+    safe(function()
+        ctl:Button({
+            Title = "Tes tembak + diagnosa (salin ke clipboard)",
+            Desc = "Menembak sekali, mencatat kenapa kena / tidak kena, lalu menyalin hasilnya",
+            Callback = function()
+                task.spawn(function()
+                    local ok, text = pcall(C.diagnose)
+                    text = tostring(text)
+                    print(text)
+                    local clip = setclipboard or toclipboard or (syn and syn.write_clipboard)
+                    if type(clip) == "function" then pcall(clip, text) end
+                    notify("Champion Punch", ok and "Diagnosa selesai: sudah disalin ke clipboard & console (F9)" or ("Error: " .. text), 6)
+                end)
+            end,
         })
     end)
     addNumber(ctl, {
