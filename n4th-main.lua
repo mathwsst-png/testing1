@@ -13980,6 +13980,66 @@ function Session.scanChampionGlove()
     return text, copied
 end
 
+-- SCAN EQUIP: cari cara game memakai (equip) item di slot tangan, tanpa mengubah apa pun.
+-- Hanya membaca nama fungsi / remote / field, lalu menyalin hasilnya ke clipboard.
+function Session.scanEquip()
+    local out = {}
+    local function add(t) out[#out + 1] = t end
+    local GLOVE_ID = 20026
+    local words = { "equip", "wear", "cloth", "wield", "hand", "slot", "glove", "fist", "ray", "outfit", "unequip", "use" }
+    local function interesting(name)
+        local n = tostring(name):lower()
+        for _, w in ipairs(words) do if n:find(w, 1, true) then return true end end
+        return false
+    end
+    local function listKeys(title, t, cap)
+        add("--- " .. title .. " ---")
+        if type(t) ~= "table" then add("(bukan tabel: " .. typeof(t) .. ")") return end
+        local keys, hot = {}, {}
+        for k, v in pairs(t) do
+            local line = tostring(k) .. " [" .. typeof(v) .. "]"
+            if type(v) ~= "table" and type(v) ~= "function" and type(v) ~= "userdata" then line = line .. " = " .. tostring(v) end
+            keys[#keys + 1] = line
+            if interesting(k) then hot[#hot + 1] = line end
+        end
+        table.sort(keys); table.sort(hot)
+        add(("total %d | mengandung kata kunci equip/slot/glove/ray dll: %d"):format(#keys, #hot))
+        for i, l in ipairs(hot) do if i > 40 then add("   ...") break end add("   * " .. l) end
+        add("semua:")
+        for i, l in ipairs(keys) do if i > (cap or 120) then add("   ... (" .. (#keys - (cap or 120)) .. " lagi)") break end add("   " .. l) end
+    end
+
+    add("== SCAN EQUIP == build " .. tostring(Session.Build) .. " | " .. os.date("%Y-%m-%d %H:%M:%S"))
+    add(("Champion's Glove #%d ada di tas kamu: %s"):format(GLOVE_ID, tostring(invCount(GLOVE_ID))))
+    local it = ItemDB[GLOVE_ID]
+    if type(it) == "table" then add("kind=" .. tostring(it.kind) .. " slot=" .. tostring(it.slot) .. " rarity=" .. tostring(it.rarity)) end
+
+    listKeys("Net (modul jaringan game)", Net, 80)
+    if type(Net) == "table" then
+        listKeys("Net.CALLS", rawget(Net, "CALLS"), 200)
+        listKeys("Net.EVENTS", rawget(Net, "EVENTS"), 200)
+    end
+    listKeys("Modul Inventory", InventoryModule, 60)
+    if Refs.Inv then
+        listKeys("Objek tas (Refs.Inv)", Refs.Inv, 60)
+        local ok, mt = pcall(getmetatable, Refs.Inv)
+        if ok and type(mt) == "table" then
+            listKeys("Metatable tas", mt, 40)
+            if type(rawget(mt, "__index")) == "table" then listKeys("Metode tas (__index)", rawget(mt, "__index"), 80) end
+        end
+    end
+    local okS, st = pcall(Refs.State)
+    if okS then listKeys("State karakter (Refs.State)", st, 80) end
+    listKeys("World (field mengandung ray/fist/equip dll)", Refs.World, 150)
+
+    local text = table.concat(out, "\n")
+    print(text)
+    local clip = setclipboard or toclipboard or (syn and syn.write_clipboard)
+    local copied = false
+    if type(clip) == "function" then copied = pcall(clip, text) end
+    return text, copied
+end
+
 local function reconnect(show)
     -- Jangan pernah mempertahankan sumber ItemDB yang gagal validasi.
     if not Session.isRealItemDB(Session.ItemDBSource) then Session.ItemDBMissing = true end
@@ -14047,6 +14107,25 @@ safe(function()
                     notify("Scan Champion's Glove", "Selesai: hasil sudah disalin ke clipboard & dicetak di console (F9)", 6)
                 else
                     notify("Scan Champion's Glove", "Selesai, tapi clipboard tidak tersedia. Hasil ada di console (F9)", 6)
+                end
+            end)
+        end,
+    })
+end)
+
+safe(function()
+    Box.ConnMain:Button({
+        Title = "Scan Equip Item (salin ke clipboard)",
+        Desc = "Cari cara game memakai item di slot tangan + cek apakah Champion's Glove ada di tasmu. Hanya membaca, tidak mengubah apa pun",
+        Callback = function()
+            task.spawn(function()
+                local ok, text, copied = pcall(Session.scanEquip)
+                if not ok then
+                    notify("Scan Equip", "Error: " .. tostring(text), 6)
+                elseif copied then
+                    notify("Scan Equip", "Selesai: hasil sudah disalin ke clipboard & dicetak di console (F9)", 6)
+                else
+                    notify("Scan Equip", "Selesai, tapi clipboard tidak tersedia. Hasil ada di console (F9)", 6)
                 end
             end)
         end,
