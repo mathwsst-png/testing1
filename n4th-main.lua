@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-22-champ-fix2"
+Session.Build = "2026-11-22-batch5"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
@@ -5357,6 +5357,8 @@ end
 -- Karakter berlari menyusuri baris berdiri (Y-2) dari ujung ke ujung pita sambil menahan
 -- pukulan ke tile pita yang paling dekat dengan badan. Tidak berhenti di tengah 5 tile.
 -- Satu pass = satu arah. Per segmen 20 tile: bolak-balik sampai segmen habis, lalu segmen berikutnya.
+Clear.RunMode = false   -- false = Auto Break seperti awal (berdiri di tengah, tidak lari); true = mode lari per segmen
+Clear.BatchGapMs = 0    -- jeda antar tile dalam satu putaran (0 = semua tile dipukul di frame yang sama)
 Clear.RunSeg = 20      -- panjang segmen lari (tile)
 Clear.RunMaxPass = 24  -- batas lintasan per segmen sebelum dilewati (tile bandel)
 
@@ -5474,6 +5476,66 @@ function Clear.bandRunPass(w, Y, d, minx, maxx)
     return ok
 end
 
+-- Pukul semua tile di jangkauan (maks 5) BARENGAN: tiap putaran, tiap tile dapat 1 pukulan,
+-- lalu jeda Fast Punch, ulangi sampai semua hancur (bukan satu tile sampai hancur baru tile berikutnya).
+function Clear.breakBatch(list, s0)
+    local footY = floor(s0.y - 0.475)
+    local R = punchReach() - 0.08
+    local pace = math.max(State.FastPunchMs or 190, 10)
+    local active, hitsBy, done, maxHits = {}, {}, 0, 6
+    for _, t in ipairs(list) do
+        active[#active + 1] = t
+        local _, id = clearLayerAt(t.x, t.y)
+        if id then maxHits = math.max(maxHits, hitsNeeded(id) * 3 + 6) end
+    end
+    while Clear.Running and alive() and #active > 0 do
+        if Clear.TargetId and raymanOn() then
+            stopClear("Lepas Rayman's Fist dulu agar block lain tidak ikut terkena.")
+            return done
+        end
+        local s = playerState()
+        if not s or s.dead or not s.grounded or floor(s.y - 0.475) ~= footY then break end
+        local nextActive = {}
+        for _, t in ipairs(active) do
+            if not Clear.Running or not alive() then return done end
+            if stateReaches(s, t.x, t.y, R) then
+                local layer, id = clearLayerAt(t.x, t.y)
+                if layer then
+                    local r = tryBreak(t.x, t.y, Clear.TargetLayer == "bg", Clear.TargetId, Clear.TargetLayer)
+                    if r == nil then
+                        skipTile(Clear.Skip, t.idx, 8)
+                    elseif r == "broke" then
+                        Clear.Broken += 1
+                        done += 1
+                        Clear.Status = "Pecah " .. itemName(id) .. " (" .. t.x .. "," .. t.y .. ")"
+                        BreakTimes[t.idx] = (BreakTimes[t.idx] or 0) + 1
+                        if BreakTimes[t.idx] > 6 then
+                            skipTile(Clear.Skip, t.idx, 120)
+                        elseif clearLayerAt(t.x, t.y) then
+                            hitsBy[t.idx] = 0
+                            nextActive[#nextActive + 1] = t
+                        end
+                    else
+                        hitsBy[t.idx] = (hitsBy[t.idx] or 0) + 1
+                        if hitsBy[t.idx] > maxHits then
+                            skipTile(Clear.Skip, t.idx, 5)
+                        else
+                            nextActive[#nextActive + 1] = t
+                        end
+                    end
+                    if Clear.BatchGapMs > 0 and not waitAuto(Clear.BatchGapMs) then return done end
+                end
+            end
+        end
+        active = nextActive
+        if #active > 0 then
+            Clear.Status = ("Pukul %d tile barengan"):format(#active)
+            if not waitAuto(pace) then return done end
+        end
+    end
+    return done
+end
+
 -- Satu langkah. true = ada yang dikerjakan, false = tidak ada pita tersisa.
 local function clearBandStep(w, s)
     local W, H = w.w, w.h
@@ -5510,7 +5572,7 @@ local function clearBandStep(w, s)
     -- 1b) sapuan lari per segmen: ambil Clear.RunSeg tile (default 20) mulai dari tile target pertama
     -- sesuai arah, lari bolak-balik sambil hit tahan sampai semua tile segmen itu habis,
     -- lalu pindah ke segmen 20 tile berikutnya.
-    if not B.RunOff then
+    if Clear.RunMode and not B.RunOff then
         local rem = bandRowTargets(w, Y, false)
         if #rem > 0 then
             table.sort(rem, function(a, b) return a.x * dir < b.x * dir end)
@@ -5565,7 +5627,7 @@ local function clearBandStep(w, s)
     local list = (curRow == Y - 2) and bandInReach(s, Y, dir) or {}
     if #list > 0 then
         Clear.BandStall = 0
-        clearBreakList(list, s)
+        Clear.breakBatch(list, s)
         return true
     end
 
