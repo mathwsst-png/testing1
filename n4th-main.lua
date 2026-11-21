@@ -11249,6 +11249,104 @@ do (function()
     end)
 end)() end
 
+-- ===== CHAMPION PUNCH (tiruan efek Champion's Glove) =====
+-- Ini BUKAN item: hanya meniru gaya pakainya (tarik sebentar, lepas, kena beberapa tile sejajar di depan)
+-- memakai pukulan biasa game. Server tetap menilai jangkauan, jadi hanya tile dalam jangkauan
+-- pukul normal yang ikut kena. Tidak ada animasi emas / terbang seperti item aslinya.
+do
+    local C = { Auto = false, Hold = false, ChargeMs = 700, Tiles = 2, Key = Enum.KeyCode.F, Token = 0, Last = "-" }
+    Session.Champ = C
+
+    -- Lepas: pukul semua tile sejajar di depan (1..Tiles) yang masih ada & terjangkau
+    function C.fire()
+        local s = playerState()
+        if not s or s.dead or not Refs.Punch then return 0 end
+        local dir = (s.facing or 1) >= 0 and 1 or -1
+        local y = floor(s.y - 0.475)
+        local x0 = floor(s.x)
+        local R = punchReach() - 0.08
+        local hit = 0
+        for i = 1, C.Tiles do
+            local tx = x0 + dir * i
+            if breakableAt(tx, y) and stateReaches(s, tx, y, R) and canWorkAt(tx, y) then
+                if tryBreak(tx, y, State.BreakBackground) then hit += 1 end
+            end
+        end
+        C.Last = ("kena %d tile arah %s"):format(hit, dir > 0 and "kanan" or "kiri")
+        return hit
+    end
+
+    -- Mode otomatis: tarik (ChargeMs) lalu lepas, terus diulang
+    function C.autoLoop(token)
+        while C.Auto and C.Token == token and alive() do
+            local t0 = os.clock()
+            while os.clock() - t0 < C.ChargeMs / 1000 do
+                if not (C.Auto and C.Token == token and alive()) then return end
+                task.wait(0.03)
+            end
+            C.fire()
+        end
+    end
+
+    -- Mode tahan tombol (keyboard): tahan tombol = tarik, lepas = tembak (kalau ditahan >= ChargeMs)
+    local downAt = nil
+    table.insert(Connections, UserInputService.InputBegan:Connect(function(input, gp)
+        if gp or not C.Hold or input.KeyCode ~= C.Key then return end
+        downAt = os.clock()
+    end))
+    table.insert(Connections, UserInputService.InputEnded:Connect(function(input)
+        if input.KeyCode ~= C.Key or not downAt then return end
+        local held = os.clock() - downAt
+        downAt = nil
+        if C.Hold and held >= C.ChargeMs / 1000 then task.spawn(C.fire) end
+    end))
+
+    local ctl = box(FarmTab, "Champion Punch (tiruan)", false)
+    safe(function()
+        ctl:Paragraph({
+            Title = "Tentang fitur ini",
+            Desc = "Meniru gaya Champion's Glove: tarik sebentar lalu lepas, memukul tile sejajar di depan. Memakai pukulan biasa game, bukan item aslinya. Hanya tile dalam jangkauan pukul normal yang kena.",
+        })
+    end)
+    safe(function()
+        ctl:Toggle({
+            Title = "Auto tarik & lepas",
+            Desc = "Otomatis menarik lalu melepas berulang ke arah hadap karakter",
+            Value = false,
+            Callback = function(on)
+                C.Token += 1
+                C.Auto = on == true
+                if C.Auto then
+                    if not Refs.Punch then
+                        notify("Champion Punch", "Fungsi pukul game belum ketemu. Tekan 'Hubungkan ke game'", 4)
+                    end
+                    task.spawn(C.autoLoop, C.Token)
+                end
+            end,
+        })
+    end)
+    safe(function()
+        ctl:Toggle({
+            Title = "Mode tahan tombol F",
+            Desc = "Tahan F untuk menarik, lepas F untuk menembak (khusus keyboard)",
+            Value = false,
+            Callback = function(on) C.Hold = on == true end,
+        })
+    end)
+    addNumber(ctl, {
+        Title = "Lama tarik (ms)",
+        Desc = "Waktu menarik sebelum dilepas",
+        Min = 200, Max = 2000, Step = 50, Default = C.ChargeMs,
+        Callback = function(v) C.ChargeMs = math.floor(v) end,
+    })
+    addNumber(ctl, {
+        Title = "Jarak (tile)",
+        Desc = "Jumlah tile di depan yang dipukul (item asli: 2)",
+        Min = 1, Max = 3, Step = 1, Default = C.Tiles,
+        Callback = function(v) C.Tiles = math.floor(v) end,
+    })
+end
+
 -- ===== TAB: CLEAR WORLD =====
 local ClearTab = makeTab("Clear World", "eraser", "farm")
 
