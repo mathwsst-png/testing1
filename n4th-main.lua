@@ -5356,8 +5356,9 @@ end
 -- ===== SAPUAN LARI (pengganti kelompok 5 tile) =====
 -- Karakter berlari menyusuri baris berdiri (Y-2) dari ujung ke ujung pita sambil menahan
 -- pukulan ke tile pita yang paling dekat dengan badan. Tidak berhenti di tengah 5 tile.
--- Satu pass = satu arah. Bolak-balik = 2 pass. Ulang Clear.RunTrips kali bolak-balik.
-Clear.RunTrips = 2 -- ubah angka ini untuk jumlah bolak-balik
+-- Satu pass = satu arah. Per segmen 20 tile: bolak-balik sampai segmen habis, lalu segmen berikutnya.
+Clear.RunSeg = 20      -- panjang segmen lari (tile)
+Clear.RunMaxPass = 24  -- batas lintasan per segmen sebelum dilewati (tile bandel)
 
 function Clear.bandRunPass(w, Y, d, minx, maxx)
     local W = w.w
@@ -5506,25 +5507,51 @@ local function clearBandStep(w, s)
     local Y, dir = B.row, B.dir
     Clear.TopRow, Clear.Dir, Clear.DirRow = Y, dir, Y
 
-    -- 1b) sapuan lari: bolak-balik Clear.RunTrips kali sambil hit tahan (lalu sisa dibereskan cara lama)
-    if not B.RunOff and (B.RunPass or 0) < Clear.RunTrips * 2 then
-        local all = bandRowTargets(w, Y, true)
-        if #all > 0 then
-            local minx, maxx = math.huge, -math.huge
-            for _, t in ipairs(all) do
-                if t.x < minx then minx = t.x end
-                if t.x > maxx then maxx = t.x end
+    -- 1b) sapuan lari per segmen: ambil Clear.RunSeg tile (default 20) mulai dari tile target pertama
+    -- sesuai arah, lari bolak-balik sambil hit tahan sampai semua tile segmen itu habis,
+    -- lalu pindah ke segmen 20 tile berikutnya.
+    if not B.RunOff then
+        local rem = bandRowTargets(w, Y, false)
+        if #rem > 0 then
+            table.sort(rem, function(a, b) return a.x * dir < b.x * dir end)
+            if not B.SegFrom then
+                B.SegFrom = rem[1].x
+                B.SegPass, B.SegFail = 0, 0
             end
-            local pass = B.RunPass or 0
-            local d = (pass % 2 == 0) and dir or -dir
+            local minx, maxx, n = math.huge, -math.huge, 0
+            for _, t in ipairs(rem) do
+                local off = (t.x - B.SegFrom) * dir
+                if off >= 0 and off < Clear.RunSeg then
+                    n += 1
+                    if t.x < minx then minx = t.x end
+                    if t.x > maxx then maxx = t.x end
+                end
+            end
+            if n == 0 then
+                -- segmen ini sudah habis: mulai segmen berikutnya dari tile target pertama yang tersisa
+                B.SegFrom = rem[1].x
+                B.SegPass, B.SegFail = 0, 0
+                return true
+            end
+            if B.SegPass >= Clear.RunMaxPass then
+                -- terlalu lama (tile bandel): lewati sisa segmen sementara, lanjut segmen berikutnya
+                for _, t in ipairs(rem) do
+                    local off = (t.x - B.SegFrom) * dir
+                    if off >= 0 and off < Clear.RunSeg then skipTile(Clear.Skip, t.idx, 60) end
+                end
+                B.SegFrom = nil
+                return true
+            end
+            local d = (B.SegPass % 2 == 0) and dir or -dir
+            Clear.Dbg = ("segmen %d tile (kolom %d-%d), sisa %d, lintasan %d"):format(Clear.RunSeg, minx, maxx, n, B.SegPass + 1)
             local okRun = Clear.bandRunPass(w, Y, d, minx, maxx)
             releaseInput()
             if okRun then
-                B.RunPass = pass + 1
-                B.RunFail = 0
+                B.SegPass += 1
+                B.SegFail = 0
             else
-                B.RunFail = (B.RunFail or 0) + 1
-                if B.RunFail >= 2 then B.RunOff = true end -- gagal terus: pakai cara lama
+                B.SegFail += 1
+                if B.SegFail >= 2 then B.RunOff = true end -- gagal terus: pakai cara lama
                 task.wait(0.2)
             end
             return true
