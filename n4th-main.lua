@@ -13807,6 +13807,179 @@ function Session.diagnose()
     return text
 end
 
+-- SCAN "Champion's Glove": cari item bernama champion's glove (apa pun cara/lokasinya) lalu salin hasilnya.
+-- Sumber yang dicek: ItemDB game, nilai teks apa pun di dalam entri item, nama objek ReplicatedStorage,
+-- dan tabel lain di memori (getgc). Semua hasil ditulis seperti log dan disalin ke clipboard.
+function Session.scanChampionGlove()
+    local out = {}
+    local function add(t) out[#out + 1] = t end
+    local function norm(v)
+        v = tostring(v):lower()
+        v = v:gsub("\226\128\153", "'"):gsub("\226\128\152", "'"):gsub("`", "'")
+        return v
+    end
+    local function hitKind(text)
+        local t = norm(text)
+        local flat = t:gsub("[^%a]", "")
+        if flat:find("championsglove", 1, true) or flat:find("championglove", 1, true) then return "EXACT" end
+        if t:find("champion", 1, true) then return "champion" end
+        if t:find("glove", 1, true) then return "glove" end
+        return nil
+    end
+    local function dump(v, depth, seen)
+        if type(v) ~= "table" then return tostring(v) end
+        seen = seen or {}
+        if seen[v] or depth > 2 then return "{...}" end
+        seen[v] = true
+        local keys = {}
+        for k in pairs(v) do keys[#keys + 1] = k end
+        table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+        local parts = {}
+        for i, k in ipairs(keys) do
+            if i > 40 then parts[#parts + 1] = "..." break end
+            parts[#parts + 1] = tostring(k) .. "=" .. dump(v[k], depth + 1, seen)
+        end
+        return "{" .. table.concat(parts, ", ") .. "}"
+    end
+
+    add("== SCAN CHAMPION'S GLOVE == build " .. tostring(Session.Build) .. " | " .. os.date("%Y-%m-%d %H:%M:%S"))
+    add("Validasi sumber ItemDB: " .. tostring(Session.isRealItemDB and Session.isRealItemDB(Session.ItemDBSource) or false))
+
+    -- 1) ItemDB
+    local src = Session.ItemDBSource
+    local exact, partial, kinds, modLike = {}, {}, {}, {}
+    local total = 0
+    if type(src) == "table" then
+        for id, it in pairs(src) do
+            total += 1
+            local label, fields = nil, {}
+            if type(it) == "string" then
+                label = it
+                local h = hitKind(it)
+                if h then fields[#fields + 1] = { "(nilai)", it, h } end
+            elseif type(it) == "table" then
+                local k = tostring(rawget(it, "kind") or rawget(it, "type") or "?")
+                kinds[k] = (kinds[k] or 0) + 1
+                for key, val in pairs(it) do
+                    if type(val) == "string" then
+                        local h = hitKind(val)
+                        if h then fields[#fields + 1] = { tostring(key), val, h } end
+                        if norm(key):find("mod", 1, true) or norm(val):find("^mod") then
+                            modLike[#modLike + 1] = { id = id, key = tostring(key), val = val }
+                        end
+                    end
+                end
+                if norm(k):find("mod", 1, true) then modLike[#modLike + 1] = { id = id, key = "kind", val = k } end
+                label = (function()
+                    for _, nk in ipairs({ "name", "Name", "displayName", "DisplayName", "title", "label" }) do
+                        local v = rawget(it, nk)
+                        if type(v) == "string" and v ~= "" then return v end
+                    end
+                end)()
+            end
+            if #fields > 0 then
+                local best = "partial"
+                for _, f in ipairs(fields) do if f[3] == "EXACT" then best = "EXACT" end end
+                local rec = { id = id, name = label, item = it, fields = fields }
+                if best == "EXACT" then exact[#exact + 1] = rec else partial[#partial + 1] = rec end
+            end
+        end
+        add(("ItemDB: %d entri dibaca"):format(total))
+    else
+        add("ItemDB: TIDAK TERSEDIA (Session.ItemDBSource bukan tabel). Tekan 'Hubungkan ke game' lalu coba lagi.")
+    end
+    local function byId(a, b) return (tonumber(a.id) or 0) < (tonumber(b.id) or 0) end
+    table.sort(exact, byId)
+    table.sort(partial, byId)
+
+    add("")
+    add(("--- COCOK PERSIS champion's glove: %d ---"):format(#exact))
+    if #exact == 0 then add("TIDAK ADA di ItemDB.") end
+    for _, r in ipairs(exact) do
+        add(("#%s nama=%s"):format(tostring(r.id), tostring(r.name)))
+        for _, f in ipairs(r.fields) do add(("   cocok di field %s = %s"):format(f[1], f[2])) end
+        add("   data: " .. dump(r.item, 0))
+    end
+
+    add("")
+    add(("--- COCOK SEBAGIAN (mengandung 'champion' atau 'glove'): %d ---"):format(#partial))
+    for i, r in ipairs(partial) do
+        if i > 60 then add("... (dipotong, " .. (#partial - 60) .. " lagi)") break end
+        local why = {}
+        for _, f in ipairs(r.fields) do why[#why + 1] = f[1] .. "=" .. f[2] end
+        add(("#%s nama=%s | %s"):format(tostring(r.id), tostring(r.name), table.concat(why, "; ")))
+    end
+
+    -- jenis item (untuk lihat apakah ada kategori 'mod')
+    local klist = {}
+    for k, n in pairs(kinds) do klist[#klist + 1] = k .. "=" .. n end
+    table.sort(klist)
+    add("")
+    add("--- JENIS ITEM (kind) di ItemDB ---")
+    add(#klist > 0 and table.concat(klist, ", ") or "(kosong)")
+    add(("--- ITEM BERTANDA 'mod' di ItemDB: %d ---"):format(#modLike))
+    table.sort(modLike, byId)
+    for i, m in ipairs(modLike) do
+        if i > 40 then add("... (dipotong, " .. (#modLike - 40) .. " lagi)") break end
+        add(("#%s %s=%s | nama=%s"):format(tostring(m.id), m.key, m.val, itemName(m.id)))
+    end
+
+    -- 2) nama objek di ReplicatedStorage
+    add("")
+    add("--- OBJEK ReplicatedStorage yang namanya cocok ---")
+    local rsHits = 0
+    pcall(function()
+        for _, o in ipairs(ReplicatedStorage:GetDescendants()) do
+            if hitKind(o.Name) then
+                rsHits += 1
+                if rsHits <= 25 then add(("%s [%s]"):format(o:GetFullName(), o.ClassName)) end
+            end
+        end
+    end)
+    if rsHits == 0 then add("tidak ada") end
+
+    -- 3) tabel lain di memori (getgc), dibatasi waktu
+    add("")
+    add("--- TABEL LAIN DI MEMORI (getgc) yang berisi teks cocok ---")
+    if type(getgc) == "function" then
+        local okGc, list = pcall(getgc, true)
+        local gcHits, checked, t0 = 0, 0, os.clock()
+        if okGc and type(list) == "table" then
+            for _, t in ipairs(list) do
+                if os.clock() - t0 > 2.5 or gcHits >= 15 then break end
+                if type(t) == "table" and t ~= src and t ~= out then
+                    checked += 1
+                    local n = 0
+                    for k, v in next, t do
+                        n += 1
+                        if n > 300 then break end
+                        if type(v) == "string" and #v < 80 and hitKind(v) == "EXACT" then
+                            gcHits += 1
+                            add(("tabel[%s] = %s"):format(tostring(k), v))
+                            break
+                        end
+                    end
+                end
+            end
+        end
+        add(("(%d tabel dicek, %d cocok persis)"):format(checked, gcHits))
+    else
+        add("getgc tidak tersedia di executor ini")
+    end
+
+    add("")
+    local exactCount = #exact
+    add(exactCount > 0 and ("KESIMPULAN: ADA %d item cocok persis."):format(exactCount)
+        or "KESIMPULAN: tidak ada item bernama champion's glove di ItemDB client (cek bagian cocok sebagian di atas).")
+
+    local text = table.concat(out, "\n")
+    print(text)
+    local clip = setclipboard or toclipboard or (syn and syn.write_clipboard)
+    local copied = false
+    if type(clip) == "function" then copied = pcall(clip, text) end
+    return text, copied
+end
+
 local function reconnect(show)
     -- Jangan pernah mempertahankan sumber ItemDB yang gagal validasi.
     if not Session.isRealItemDB(Session.ItemDBSource) then Session.ItemDBMissing = true end
@@ -13856,6 +14029,25 @@ safe(function()
             task.spawn(function()
                 local ok, res = pcall(Session.diagnose)
                 notify("Diagnosa", ok and "Selesai: sudah disalin ke clipboard & dicetak di console (F9)" or tostring(res), 6)
+            end)
+        end,
+    })
+end)
+
+safe(function()
+    Box.ConnMain:Button({
+        Title = "Scan Champion's Glove (salin ke clipboard)",
+        Desc = "Cari item bernama Champion's Glove di ItemDB & memori game, lalu langsung salin hasilnya sebagai log",
+        Callback = function()
+            task.spawn(function()
+                local ok, text, copied = pcall(Session.scanChampionGlove)
+                if not ok then
+                    notify("Scan Champion's Glove", "Error: " .. tostring(text), 6)
+                elseif copied then
+                    notify("Scan Champion's Glove", "Selesai: hasil sudah disalin ke clipboard & dicetak di console (F9)", 6)
+                else
+                    notify("Scan Champion's Glove", "Selesai, tapi clipboard tidak tersedia. Hasil ada di console (F9)", 6)
+                end
             end)
         end,
     })
