@@ -4,7 +4,7 @@ for _, key in ipairs({ "__n4thOpus", "__GTFarm" }) do -- __GTFarm = nama versi l
     G[key] = nil
 end
 local Session = {}
-Session.Build = "2026-11-17-place-corner-right"
+Session.Build = "2026-11-22-champ-fix2"
 G.__n4thOpus = Session
 local function alive()
     return G.__n4thOpus == Session
