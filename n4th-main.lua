@@ -713,6 +713,8 @@ local Clear = {
     UseBlock = true,          -- taruh block kalau tidak ada pijakan
     ScaffoldId = nil,         -- block yang dipakai untuk pijakan
     Collect = true,           -- ambil drop tiap habis pecah
+    HitMs = 100,              -- jeda tiap pukulan khusus Clear (ms, lebih kecil = lebih cepat)
+    MoveSpeed = 150,          -- walkspeed % khusus saat Clear jalan (100 = normal)
     Sweep = "Kiri → Kanan",   -- "Kiri → Kanan" atau "Zig-zag"
     Skip = {},                -- tile yang dilewati sementara
     TopRow = -1,              -- baris yang sedang dibersihkan
@@ -1888,7 +1890,7 @@ Config.add("RouteDrop", RouteDrop, { "TargetId", "PlatformId", "DropX", "DropY",
 if (Config.Data.Version == nil or Config.Data.Version == 1) and State.AfterBreakMs == 300 then
     State.AfterBreakMs = 250
 end
-Config.add("Clear", Clear, { "UseBlock", "ScaffoldId", "Collect", "Sweep" })
+Config.add("Clear", Clear, { "UseBlock", "ScaffoldId", "Collect", "Sweep", "HitMs", "MoveSpeed" })
 Config.add("Farmer", Farmer, {
     "Harvest", "Plant", "Collect", "UseBlock", "ScaffoldId", "HarvestMs", "PlantMs", "SeedId", "Focus", "Tractor",
     "GroundFilter", "PlantDirt", "PlantWood", "PlantRespawn",
@@ -3435,7 +3437,9 @@ end
 table.insert(Connections, RunService.Heartbeat:Connect(function()
     local w = Refs.World
     if not w or not alive() then return end
-    if Misc.Speed ~= 100 then w.speedScale = Misc.Speed / 100 end
+    local spd = Misc.Speed
+    if Clear.Running and (Clear.MoveSpeed or 100) > spd then spd = Clear.MoveSpeed end
+    if spd ~= 100 then w.speedScale = spd / 100 end
     if Misc.Ghost and w.ghost ~= true then w.ghost = true end
 end))
 
@@ -5248,7 +5252,7 @@ local function clearBreakTile(t)
                 return
             end
         end
-        if not waitAuto(pace or State.BreakMs) then return end
+        if not waitAuto(pace or math.max(Clear.HitMs or 100, 30)) then return end
         if r == "broke" then
             local s = playerState()
             if not s or not s.grounded then return end -- jatuh, cek ulang posisi
@@ -5626,6 +5630,7 @@ end
 
 stopClear = function(reason)
     Clear.Running = false
+    if Misc.Speed == 100 and Refs.World then pcall(function() Refs.World.speedScale = 1 end) end
     autoEnd()
     setClearVisual()
     Clear.Status = reason or "Dihentikan"
@@ -10149,7 +10154,6 @@ HiddenTab = setmetatable({}, {
 })
 local HiddenTabs = {
     ["Auto Drop"] = true,
-    ["Clear World"] = true,
     ["Farmer"] = true,
     ["Growscan"] = true,
     ["Statistik"] = true,
@@ -11143,6 +11147,20 @@ safe(function()
         Callback = function(on) Clear.Collect = on end,
     })
 end)
+
+addNumber(Box.ClearSet, {
+    Title = "Jeda pukulan (ms)",
+    Desc = "Makin kecil makin cepat (normal 220). Terlalu kecil bisa ditolak server",
+    Min = 30, Max = 400, Step = 10, Default = Clear.HitMs,
+    Callback = function(v) Clear.HitMs = math.floor(v) end,
+})
+
+addNumber(Box.ClearSet, {
+    Title = "Kecepatan gerak Clear (%)",
+    Desc = "Walkspeed saat Clear jalan (100 = normal)",
+    Min = 100, Max = 300, Step = 10, Default = Clear.MoveSpeed,
+    Callback = function(v) Clear.MoveSpeed = math.floor(v) end,
+})
 
 safe(function()
     Box.ClearCtl:Button({
