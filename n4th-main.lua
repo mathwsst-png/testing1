@@ -713,6 +713,7 @@ local Clear = {
     UseBlock = true,          -- taruh block kalau tidak ada pijakan
     ScaffoldId = nil,         -- block yang dipakai untuk pijakan
     Collect = true,           -- ambil drop tiap habis pecah
+    Batch = 15,               -- jumlah tile yang dipukul bersamaan tiap putaran (1 = satu per satu)
     HitMs = 100,              -- jeda tiap pukulan khusus Clear (ms, lebih kecil = lebih cepat)
     MoveSpeed = 150,          -- walkspeed % khusus saat Clear jalan (100 = normal)
     Sweep = "Kiri → Kanan",   -- "Kiri → Kanan" atau "Zig-zag"
@@ -1890,7 +1891,7 @@ Config.add("RouteDrop", RouteDrop, { "TargetId", "PlatformId", "DropX", "DropY",
 if (Config.Data.Version == nil or Config.Data.Version == 1) and State.AfterBreakMs == 300 then
     State.AfterBreakMs = 250
 end
-Config.add("Clear", Clear, { "UseBlock", "ScaffoldId", "Collect", "Sweep", "HitMs", "MoveSpeed" })
+Config.add("Clear", Clear, { "UseBlock", "ScaffoldId", "Collect", "Sweep", "HitMs", "MoveSpeed", "Batch" })
 Config.add("Farmer", Farmer, {
     "Harvest", "Plant", "Collect", "UseBlock", "ScaffoldId", "HarvestMs", "PlantMs", "SeedId", "Focus", "Tractor",
     "GroundFilter", "PlantDirt", "PlantWood", "PlantRespawn",
@@ -5260,10 +5261,72 @@ local function clearBreakTile(t)
     end
 end
 
+-- Pukul banyak tile sekaligus: tiap putaran semua tile di daftar dipukul 1x,
+-- lalu jeda, ulangi sampai semuanya hancur (hit tiap tile tetap sesuai kekerasannya).
+local function clearBreakBatch(tiles)
+    local includeBg = (not Clear.TargetId and Clear.IncludeBg) or (Clear.TargetLayer == "bg")
+    local pace = Clear.TargetId and math.max(State.FastPunchMs or 190, 10) or nil
+    local delayMs = pace or math.max(Clear.HitMs or 100, 30)
+    local active, done = {}, 0
+    for _, t in ipairs(tiles) do
+        local _, id = clearLayerAt(t.x, t.y)
+        if id then active[#active + 1] = { t = t, hits = 0, maxHits = hitsNeeded(id) * 3 + 6 } end
+    end
+    while #active > 0 and Clear.Running and alive() do
+        if Clear.TargetId and raymanOn() then
+            stopClear("Lepas Rayman's Fist dulu agar block lain tidak ikut terkena.")
+            return done
+        end
+        local nxt, brokeAny = {}, false
+        for _, a in ipairs(active) do
+            if not Clear.Running or not alive() then break end
+            local t = a.t
+            local layer, id = clearLayerAt(t.x, t.y)
+            if layer then
+                local r = tryBreak(t.x, t.y, includeBg, Clear.TargetId, Clear.TargetLayer)
+                if r == nil then
+                    skipTile(Clear.Skip, t.idx, pace and 8 or 60)
+                elseif r == "broke" then
+                    done += 1
+                    brokeAny = true
+                    Clear.Broken += 1
+                    Clear.Status = "Pecah " .. itemName(id) .. " (" .. t.x .. "," .. t.y .. ")"
+                    BreakTimes[t.idx] = (BreakTimes[t.idx] or 0) + 1
+                    if BreakTimes[t.idx] > 6 then
+                        skipTile(Clear.Skip, t.idx, 120)
+                    else
+                        a.hits = 0
+                        local _, nid = clearLayerAt(t.x, t.y)
+                        if nid then a.maxHits = hitsNeeded(nid) * 3 + 6 end
+                        nxt[#nxt + 1] = a -- cek lagi (mungkin masih ada layer bg)
+                    end
+                else
+                    a.hits += 1
+                    Clear.Status = ("Pukul %d tile sekaligus"):format(#active)
+                    if a.hits > a.maxHits then
+                        skipTile(Clear.Skip, t.idx, pace and 5 or 45)
+                    else
+                        nxt[#nxt + 1] = a
+                    end
+                end
+            end
+        end
+        active = nxt
+        if #active == 0 then break end
+        if not waitAuto(delayMs) then break end
+        if brokeAny then
+            local s = playerState()
+            if not s or not s.grounded then break end -- jatuh, cek ulang posisi
+        end
+    end
+    return done
+end
+
 local function clearBreakList(list, s0)
     local footY = floor(s0.y - 0.475)
     local R = punchReach() - 0.08
     local done = 0
+    local valid = {}
     for _, t in ipairs(list) do
         if not Clear.Running or not alive() then break end
         local s = playerState()
@@ -5284,9 +5347,23 @@ local function clearBreakList(list, s0)
         if skipIt then
             skipTile(Clear.Skip, t.idx, 20)
         else
+            valid[#valid + 1] = t
+        end
+    end
+    local n = math.clamp(math.floor(Clear.Batch or 1), 1, 40)
+    if n <= 1 then
+        for _, t in ipairs(valid) do
+            if not Clear.Running or not alive() then break end
             clearBreakTile(t)
             done += 1
         end
+        return done
+    end
+    for i = 1, #valid, n do
+        if not Clear.Running or not alive() then break end
+        local chunk = {}
+        for j = i, math.min(i + n - 1, #valid) do chunk[#chunk + 1] = valid[j] end
+        done += clearBreakBatch(chunk)
     end
     return done
 end
@@ -11147,6 +11224,13 @@ safe(function()
         Callback = function(on) Clear.Collect = on end,
     })
 end)
+
+addNumber(Box.ClearSet, {
+    Title = "Tile dipukul bersamaan",
+    Desc = "Berapa tile dipukul sekaligus tiap putaran (1 = satu per satu)",
+    Min = 1, Max = 40, Step = 1, Default = Clear.Batch,
+    Callback = function(v) Clear.Batch = math.floor(v) end,
+})
 
 addNumber(Box.ClearSet, {
     Title = "Jeda pukulan (ms)",
