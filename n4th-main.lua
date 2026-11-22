@@ -10154,7 +10154,6 @@ local HiddenTabs = {
     ["Growscan"] = true,
     ["Statistik"] = true,
     ["Tas"] = true,
-    ["Lahan"] = true,
     ["Pabrik"] = true,
     ["Titik Drop"] = true,
 }
