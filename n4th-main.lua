@@ -5267,12 +5267,28 @@ local function clearBreakBatch(tiles)
     local includeBg = (not Clear.TargetId and Clear.IncludeBg) or (Clear.TargetLayer == "bg")
     local pace = Clear.TargetId and math.max(State.FastPunchMs or 190, 10) or nil
     local delayMs = pace or math.max(Clear.HitMs or 100, 30)
-    local active, done = {}, 0
-    for _, t in ipairs(tiles) do
-        local _, id = clearLayerAt(t.x, t.y)
-        if id then active[#active + 1] = { t = t, hits = 0, maxHits = hitsNeeded(id) * 3 + 6 } end
+    local RETRY = 60 -- batas gagal beruntun sebelum tile benar-benar dilewati (hindari loop tak berujung)
+    local done, verify = 0, 0
+    local function build()
+        local list = {}
+        for _, t in ipairs(tiles) do
+            if not skipped(Clear.Skip, t.idx) then
+                local _, id = clearLayerAt(t.x, t.y)
+                if id then list[#list + 1] = { t = t, fail = 0 } end
+            end
+        end
+        return list
     end
-    while #active > 0 and Clear.Running and alive() do
+    local active = build()
+    while Clear.Running and alive() do
+        if #active == 0 then
+            -- semua tampak hancur: tunggu sinkron server, cek ulang; kalau ada yang balik, pukul lagi
+            if verify >= 3 then break end
+            verify += 1
+            if not waitAuto(math.max(delayMs, 150)) then break end
+            active = build()
+            if #active == 0 then break end
+        end
         if Clear.TargetId and raymanOn() then
             stopClear("Lepas Rayman's Fist dulu agar block lain tidak ikut terkena.")
             return done
@@ -5284,27 +5300,24 @@ local function clearBreakBatch(tiles)
             local layer, id = clearLayerAt(t.x, t.y)
             if layer then
                 local r = tryBreak(t.x, t.y, includeBg, Clear.TargetId, Clear.TargetLayer)
-                if r == nil then
-                    skipTile(Clear.Skip, t.idx, pace and 8 or 60)
-                elseif r == "broke" then
+                if r == "broke" then
                     done += 1
                     brokeAny = true
+                    a.fail = 0
                     Clear.Broken += 1
                     Clear.Status = "Pecah " .. itemName(id) .. " (" .. t.x .. "," .. t.y .. ")"
                     BreakTimes[t.idx] = (BreakTimes[t.idx] or 0) + 1
-                    if BreakTimes[t.idx] > 6 then
+                    if BreakTimes[t.idx] > 40 then
                         skipTile(Clear.Skip, t.idx, 120)
                     else
-                        a.hits = 0
-                        local _, nid = clearLayerAt(t.x, t.y)
-                        if nid then a.maxHits = hitsNeeded(nid) * 3 + 6 end
-                        nxt[#nxt + 1] = a -- cek lagi (mungkin masih ada layer bg)
+                        nxt[#nxt + 1] = a -- cek lagi di putaran berikut (balik lagi / layer bg)
                     end
                 else
-                    a.hits += 1
-                    Clear.Status = ("Pukul %d tile sekaligus"):format(#active)
-                    if a.hits > a.maxHits then
-                        skipTile(Clear.Skip, t.idx, pace and 5 or 45)
+                    -- ditolak server (nil) atau masih utuh ("hit"): ulang terus di tile yang sama
+                    a.fail += 1
+                    Clear.Status = ("Ulang pukul %d tile (%d,%d)"):format(#active, t.x, t.y)
+                    if a.fail > RETRY then
+                        skipTile(Clear.Skip, t.idx, pace and 8 or 60)
                     else
                         nxt[#nxt + 1] = a
                     end
@@ -5312,11 +5325,12 @@ local function clearBreakBatch(tiles)
             end
         end
         active = nxt
-        if #active == 0 then break end
-        if not waitAuto(delayMs) then break end
-        if brokeAny then
-            local s = playerState()
-            if not s or not s.grounded then break end -- jatuh, cek ulang posisi
+        if #active > 0 then
+            if not waitAuto(delayMs) then break end
+            if brokeAny then
+                local st = playerState()
+                if not st or not st.grounded then break end -- jatuh, cek ulang posisi
+            end
         end
     end
     return done
